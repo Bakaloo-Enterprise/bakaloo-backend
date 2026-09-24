@@ -168,6 +168,17 @@ const envSchema = z.object({
   // Demo delivery flow
   ALLOW_DEMO_DELIVERY_ACTIONS: booleanFromEnv.default(false),
 
+  // Spin & Win / Scratch Card — guaranteed first-time reward (migration 139)
+  // only ever applies to accounts created ON or AFTER this instant. Without
+  // this cutoff, every account that existed BEFORE migration 139 shipped
+  // has zero spin_history/scratch_history rows simply because those tables
+  // didn't exist yet — so their first spin/scratch after updating would
+  // wrongly look "first ever" and pull from the first-time pool. Default is
+  // this repo's migration-139 merge commit time; if you know the exact
+  // instant `npm run db:migrate` actually ran on production, set this env
+  // var to that instead for a precise cutover.
+  FIRST_TIME_REWARD_CUTOFF_AT: z.coerce.date().default(new Date('2026-09-15T18:26:07+05:30')),
+
   // Delivery
   DELIVERY_RADIUS_KM: z.coerce.number().default(10),
   EXPRESS_DELIVERY_MINUTES: z.coerce.number().default(30),

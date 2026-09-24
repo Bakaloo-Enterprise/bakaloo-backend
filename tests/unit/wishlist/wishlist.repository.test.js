@@ -88,3 +88,86 @@ describe('WishlistRepository.findUsersByWishlistedProduct', () => {
     expect(rows).toEqual([])
   })
 })
+
+describe('WishlistRepository.getWishlist — shop-scoped price/stock (regression for master-catalog fallback bug)', () => {
+  const USER_ID = 'u-1'
+  const SHOP_ID = 'shop-1'
+
+  it('with no allocatedShopIds (legacy/anonymous), falls back to master catalog price/stock (negative)', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{
+        id: 'w-1', product_id: PRODUCT_ID, created_at: '2026-01-01',
+        name: 'Milk', slug: 'milk', description: null,
+        price: 50, sale_price: null, category_id: 'c-1',
+        stock_quantity: 20, unit: '1L', net_quantity: null,
+        option_label: null, thumbnail_url: null, images: [], tags: [],
+        is_active: true, is_featured: false, total_sold: 0, max_order_qty: 10,
+        ingredients: null, allergen_info: null, shelf_life: null,
+        storage_instructions: null, certifications: null, nutrition_info: null,
+        product_created_at: '2026-01-01', shop_product_id: null, shop_id: null,
+        category_name: 'Dairy',
+      }],
+    })
+    const repo = new WishlistRepository()
+    const result = await repo.getWishlist(USER_ID)
+
+    const [sql] = query.mock.calls[0]
+    expect(sql).toContain('p.price')
+    expect(sql).not.toContain('LEFT JOIN LATERAL')
+    expect(result.items[0].price).toBe(50)
+    expect(result.items[0].stock_quantity).toBe(20)
+    expect(result.items[0].is_available_at_shop).toBeNull()
+  })
+
+  it('with allocatedShopIds, resolves price/stock from shop_products via the shared shop-price join (positive)', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{
+        id: 'w-1', product_id: PRODUCT_ID, created_at: '2026-01-01',
+        name: 'Milk', slug: 'milk', description: null,
+        price: 45, sale_price: null, category_id: 'c-1',
+        stock_quantity: 0, unit: '1L', net_quantity: null,
+        option_label: null, thumbnail_url: null, images: [], tags: [],
+        is_active: true, is_featured: false, total_sold: 0, max_order_qty: 10,
+        ingredients: null, allergen_info: null, shelf_life: null,
+        storage_instructions: null, certifications: null, nutrition_info: null,
+        product_created_at: '2026-01-01', shop_product_id: 'sp-1', shop_id: SHOP_ID,
+        category_name: 'Dairy',
+      }],
+    })
+    const repo = new WishlistRepository()
+    const result = await repo.getWishlist(USER_ID, [SHOP_ID])
+
+    const [sql, params] = query.mock.calls[0]
+    expect(sql).toContain('LEFT JOIN LATERAL')
+    expect(sql).toContain('shop_price.sp_price')
+    expect(sql).toContain('shop_price.sp_stock_quantity')
+    expect(params).toEqual([USER_ID, [SHOP_ID]])
+    expect(result.items[0].price).toBe(45)
+    expect(result.items[0].stock_quantity).toBe(0)
+    expect(result.items[0].shop_product_id).toBe('sp-1')
+    expect(result.items[0].is_available_at_shop).toBe(true)
+  })
+
+  it('with allocatedShopIds but no matching shop_products row, price/stock come back null and is_available_at_shop is false (negative)', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{
+        id: 'w-1', product_id: PRODUCT_ID, created_at: '2026-01-01',
+        name: 'Milk', slug: 'milk', description: null,
+        price: null, sale_price: null, category_id: 'c-1',
+        stock_quantity: null, unit: '1L', net_quantity: null,
+        option_label: null, thumbnail_url: null, images: [], tags: [],
+        is_active: true, is_featured: false, total_sold: 0, max_order_qty: 10,
+        ingredients: null, allergen_info: null, shelf_life: null,
+        storage_instructions: null, certifications: null, nutrition_info: null,
+        product_created_at: '2026-01-01', shop_product_id: null, shop_id: null,
+        category_name: 'Dairy',
+      }],
+    })
+    const repo = new WishlistRepository()
+    const result = await repo.getWishlist(USER_ID, [SHOP_ID])
+
+    expect(result.items[0].price).toBeNull()
+    expect(result.items[0].stock_quantity).toBeNull()
+    expect(result.items[0].is_available_at_shop).toBe(false)
+  })
+})

@@ -33,9 +33,12 @@ async function corsPlugin(fastify) {
   // Production domains are always allowed regardless of env config, so we never
   // get blocked by a missing CORS_ORIGINS entry after a deploy. Matches:
   //   - bakaloo.in and any subdomain (www, api, dash, etc.)
+  //   - bakalooindia.com and any subdomain (the customer storefront domain —
+  //     www.bakalooindia.com calling api.bakaloo.in was blocked with no
+  //     Access-Control-Allow-Origin header until this was added)
   //   - shotlin.in and any subdomain
   //   - *.vercel.app preview/production deployments
-  const allowedHostSuffixes = ['bakaloo.in', 'shotlin.in', 'vercel.app']
+  const allowedHostSuffixes = ['bakaloo.in', 'bakalooindia.com', 'shotlin.in', 'vercel.app']
 
   function isOriginAllowed(origin) {
     // Non-browser requests (curl, server-to-server) send no Origin header.

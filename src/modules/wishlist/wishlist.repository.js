@@ -1,28 +1,50 @@
 import { query, getClient } from '../../config/database.js'
 import { CartService } from '../cart/cart.service.js'
 import { CartRepository } from '../cart/cart.repository.js'
+import { buildShopPriceJoin } from '../products/products.repository.js'
 
 /**
  * Wishlist repository — database access for wishlist
  */
 export class WishlistRepository {
-  async getWishlist(userId) {
+  /**
+   * @param {string} userId
+   * @param {string[]|null} [allocatedShopIds] - Customer shop scoping, same
+   *   contract as ProductsRepository — when set, price/sale_price/
+   *   stock_quantity/is_available come from the customer's own shop
+   *   listing (shop_products), never the master catalog, mirroring every
+   *   other customer-facing product surface (search/detail/home/category).
+   *   A wishlisted product not currently carried by any allocated shop
+   *   simply resolves to null price/0 stock (LEFT JOIN LATERAL) rather
+   *   than disappearing — the customer still sees it, just correctly
+   *   marked unavailable instead of showing a stale master-catalog price.
+   *   `null` (no customer context) preserves the legacy master-catalog
+   *   fallback.
+   */
+  async getWishlist(userId, allocatedShopIds = null) {
+    const params = [userId]
+    const shopPrice = buildShopPriceJoin(allocatedShopIds, params, params.length + 1)
+
     const { rows } = await query(
       `SELECT w.id, w.product_id, w.created_at,
-              p.name, p.slug, p.description, p.price, p.sale_price,
-              p.category_id, p.stock_quantity, p.unit, p.net_quantity,
+              p.name, p.slug, p.description,
+              ${shopPrice.priceExpr} AS price, ${shopPrice.salePriceExpr} AS sale_price,
+              p.category_id, ${shopPrice.stockExpr} AS stock_quantity, p.unit, p.net_quantity,
               p.option_label, p.thumbnail_url,
               p.images, p.tags, p.is_active, p.is_featured, p.total_sold,
               p.max_order_qty, p.ingredients, p.allergen_info, p.shelf_life,
               p.storage_instructions, p.certifications, p.nutrition_info,
               p.created_at AS product_created_at,
+              ${shopPrice.shopProductIdExpr} AS shop_product_id,
+              ${shopPrice.shopIdExpr} AS shop_id,
               c.name AS category_name
        FROM wishlist w
        JOIN products p ON w.product_id = p.id
        LEFT JOIN categories c ON c.id = p.category_id
+       ${shopPrice.joinSql}
        WHERE w.user_id = $1
        ORDER BY w.created_at DESC`,
-      [userId]
+      params
     )
 
     return {
@@ -36,6 +58,13 @@ export class WishlistRepository {
         category_id: row.category_id,
         category_name: row.category_name,
         stock_quantity: row.stock_quantity,
+        // Shop-scoped callers (allocatedShopIds set) only ever have a valid
+        // price/stock when a matching shop_products row was found — no
+        // match means "not carried by any of this customer's shops right
+        // now", same as everywhere else in the app.
+        is_available_at_shop: Array.isArray(allocatedShopIds)
+          ? row.shop_product_id != null
+          : null,
         unit: row.unit,
         net_quantity: row.net_quantity,
         option_label: row.option_label,
@@ -52,6 +81,8 @@ export class WishlistRepository {
         certifications: row.certifications,
         nutrition_info: row.nutrition_info,
         is_active: row.is_active,
+        shop_product_id: row.shop_product_id,
+        shop_id: row.shop_id,
         created_at: row.product_created_at,
         wishlist_entry_id: row.id,
         wishlist_added_at: row.created_at,

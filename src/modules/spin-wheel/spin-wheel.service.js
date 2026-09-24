@@ -72,7 +72,8 @@ export class SpinWheelService {
     let prizes = null
     if (userId) {
       const settings = await this.repo.getSettings()
-      if (settings.firstTimeRewardEnabled && !(await this.repo.hasSpinHistory(null, userId))) {
+      if (settings.firstTimeRewardEnabled && !(await this.repo.hasSpinHistory(null, userId))
+        && (await this.repo.isEligibleAccountForFirstTimeReward(null, userId))) {
         const firstTimePrizes = await this.repo.findActiveFirstTimePrizes()
         if (this._validateActiveSetForFirstTime(firstTimePrizes).ok) {
           prizes = firstTimePrizes
@@ -198,7 +199,8 @@ export class SpinWheelService {
       // fatal — if the first-time pool itself is misconfigured, so an
       // admin mistake there never blocks a genuine first spin outright.
       let prizes = null
-      if (settings.firstTimeRewardEnabled && !(await this.repo.hasSpinHistory(client, userId))) {
+      if (settings.firstTimeRewardEnabled && !(await this.repo.hasSpinHistory(client, userId))
+        && (await this.repo.isEligibleAccountForFirstTimeReward(client, userId))) {
         const firstTimePrizes = await this.repo.findActiveFirstTimePrizes()
         const ftValidation = this._validateActiveSetForFirstTime(firstTimePrizes)
         if (ftValidation.ok) {

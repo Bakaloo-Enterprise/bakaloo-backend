@@ -67,6 +67,10 @@ function makeRepoMock(overrides = {}) {
     // most tests in this file predate the first-time reward feature and
     // shouldn't accidentally take that path.
     hasSpinHistory: vi.fn().mockResolvedValue(true),
+    // Defaults to eligible so existing hasSpinHistory-only tests (predating
+    // the account-cutoff check) keep exercising the same first-time/normal
+    // branch they were written for.
+    isEligibleAccountForFirstTimeReward: vi.fn().mockResolvedValue(true),
     findActiveFirstTimePrizes: vi.fn().mockResolvedValue([]),
     findAllFirstTimePrizes: vi.fn().mockResolvedValue([]),
     findFirstTimePrizeById: vi.fn().mockResolvedValue(null),
@@ -443,6 +447,28 @@ describe('SpinWheelService.spin — first-time guaranteed reward', () => {
     expect(result.isFirstTimeReward).toBe(false)
     expect(result.prize.type).toBe('CASHBACK')
   })
+
+  it('a pre-existing account (created before the first-time-reward cutoff, no spin history) uses the normal pool, not the first-time pool (negative — regression for old users getting the new-user offer after an app update)', async () => {
+    const repo = makeRepoMock({
+      getOrCreateSpinWalletForUpdate: vi.fn().mockResolvedValue({ userId: USER_ID, availableSpins: 1, grantedToday: true }),
+      getSettings: vi.fn().mockResolvedValue({ dailyFreeSpins: 1, triggerMode: 'ALWAYS_ON_LOGIN', firstTimeRewardEnabled: true }),
+      hasSpinHistory: vi.fn().mockResolvedValue(false),
+      isEligibleAccountForFirstTimeReward: vi.fn().mockResolvedValue(false),
+      findActiveFirstTimePrizes: vi.fn().mockResolvedValue([
+        prize({ id: 'ft-1', type: 'CASHBACK', value: 25, winProbability: 100 }),
+      ]),
+      findActivePrizes: vi.fn().mockResolvedValue([
+        prize({ type: 'BETTER_LUCK', winProbability: 100 }),
+        prize({ id: 'p2', winProbability: 0 }),
+      ]),
+    })
+    const service = makeService({ repo })
+    const result = await service.spin(USER_ID)
+    expect(result.success).toBe(true)
+    expect(result.isFirstTimeReward).toBe(false)
+    expect(result.prize.type).toBe('BETTER_LUCK')
+    expect(repo.findActiveFirstTimePrizes).not.toHaveBeenCalled()
+  })
 })
 
 describe('SpinWheelService.getActivePrizesForCustomer — wheel visual matches what spin() can actually land on', () => {
@@ -498,6 +524,20 @@ describe('SpinWheelService.getActivePrizesForCustomer — wheel visual matches w
     const service = makeService({ repo })
     const result = await service.getActivePrizesForCustomer(USER_ID)
     expect(result).toEqual([expect.objectContaining({ id: 'normal-1' })])
+  })
+
+  it('a pre-existing account (no spin history, created before the cutoff) sees the normal pool, not the first-time pool (negative — regression for old users)', async () => {
+    const repo = makeRepoMock({
+      getSettings: vi.fn().mockResolvedValue({ dailyFreeSpins: 1, triggerMode: 'ALWAYS_ON_LOGIN', firstTimeRewardEnabled: true }),
+      hasSpinHistory: vi.fn().mockResolvedValue(false),
+      isEligibleAccountForFirstTimeReward: vi.fn().mockResolvedValue(false),
+      findActiveFirstTimePrizes: vi.fn().mockResolvedValue([prize({ id: 'ft-1', winProbability: 100 })]),
+      findActivePrizes: vi.fn().mockResolvedValue([prize({ id: 'normal-1', winProbability: 100 })]),
+    })
+    const service = makeService({ repo })
+    const result = await service.getActivePrizesForCustomer(USER_ID)
+    expect(result).toEqual([expect.objectContaining({ id: 'normal-1' })])
+    expect(repo.findActiveFirstTimePrizes).not.toHaveBeenCalled()
   })
 
   it('an anonymous caller (no userId) sees the normal pool (negative)', async () => {

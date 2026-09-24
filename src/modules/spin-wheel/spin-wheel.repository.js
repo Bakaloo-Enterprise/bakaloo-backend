@@ -1,4 +1,5 @@
 import { query, getClient } from '../../config/database.js'
+import { env } from '../../config/env.js'
 
 const PRIZE_COLUMNS = `
   id, type, icon_key, label, value, win_probability, display_order,
@@ -235,6 +236,23 @@ export class SpinWheelRepository {
       [userId]
     )
     return rows[0].has_history === true
+  }
+
+  /**
+   * A user only ever qualifies for the first-time reward pool if their
+   * account was created on/after FIRST_TIME_REWARD_CUTOFF_AT — see
+   * env.js's comment. Without this, an account that existed before
+   * migration 139 shipped has no spin_history rows purely because the
+   * table didn't exist yet, and would otherwise look "first ever" on its
+   * first post-update spin.
+   */
+  async isEligibleAccountForFirstTimeReward(client, userId) {
+    const runner = client ? client.query.bind(client) : query
+    const { rows } = await runner(
+      'SELECT created_at >= $2 AS is_new_account FROM users WHERE id = $1',
+      [userId, env.FIRST_TIME_REWARD_CUTOFF_AT]
+    )
+    return rows[0]?.is_new_account === true
   }
 
   // ─── Settings (singleton) ──────────────────────────────────────────────

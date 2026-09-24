@@ -153,7 +153,8 @@ export class ScratchCardService {
       // fatal — if the first-time pool itself is misconfigured, so an
       // admin mistake there never blocks a genuine first scratch outright.
       let prizes = null
-      if (settings.firstTimeRewardEnabled && !(await this.repo.hasScratchHistory(client, userId))) {
+      if (settings.firstTimeRewardEnabled && !(await this.repo.hasScratchHistory(client, userId))
+        && (await this.repo.isEligibleAccountForFirstTimeReward(client, userId))) {
         const firstTimePrizes = await this.repo.findActiveFirstTimePrizes()
         const ftValidation = this._validateActiveSetForFirstTime(firstTimePrizes)
         if (ftValidation.ok) {

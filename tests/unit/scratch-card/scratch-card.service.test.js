@@ -67,6 +67,10 @@ function makeRepoMock(overrides = {}) {
     // most tests in this file predate the first-time reward feature and
     // shouldn't accidentally take that path.
     hasScratchHistory: vi.fn().mockResolvedValue(true),
+    // Defaults to eligible so existing hasScratchHistory-only tests
+    // (predating the account-cutoff check) keep exercising the same
+    // first-time/normal branch they were written for.
+    isEligibleAccountForFirstTimeReward: vi.fn().mockResolvedValue(true),
     findActiveFirstTimePrizes: vi.fn().mockResolvedValue([]),
     findAllFirstTimePrizes: vi.fn().mockResolvedValue([]),
     findFirstTimePrizeById: vi.fn().mockResolvedValue(null),
@@ -397,6 +401,28 @@ describe('ScratchCardService.scratch — first-time guaranteed reward', () => {
     expect(result.success).toBe(true)
     expect(result.isFirstTimeReward).toBe(false)
     expect(result.prize.type).toBe('CASHBACK')
+  })
+
+  it('a pre-existing account (created before the first-time-reward cutoff, no scratch history) uses the normal pool, not the first-time pool (negative — regression for old users getting the new-user offer after an app update)', async () => {
+    const repo = makeRepoMock({
+      getOrCreateScratchWalletForUpdate: vi.fn().mockResolvedValue({ userId: USER_ID, availableScratches: 1, grantedToday: true }),
+      getSettings: vi.fn().mockResolvedValue({ dailyFreeScratches: 1, triggerMode: 'ALWAYS_ON_LOGIN', firstTimeRewardEnabled: true }),
+      hasScratchHistory: vi.fn().mockResolvedValue(false),
+      isEligibleAccountForFirstTimeReward: vi.fn().mockResolvedValue(false),
+      findActiveFirstTimePrizes: vi.fn().mockResolvedValue([
+        prize({ id: 'ft-1', type: 'CASHBACK', value: 25, winProbability: 100 }),
+      ]),
+      findActivePrizes: vi.fn().mockResolvedValue([
+        prize({ type: 'BETTER_LUCK', winProbability: 100 }),
+        prize({ id: 'p2', winProbability: 0 }),
+      ]),
+    })
+    const service = makeService({ repo })
+    const result = await service.scratch(USER_ID)
+    expect(result.success).toBe(true)
+    expect(result.isFirstTimeReward).toBe(false)
+    expect(result.prize.type).toBe('BETTER_LUCK')
+    expect(repo.findActiveFirstTimePrizes).not.toHaveBeenCalled()
   })
 })
 
