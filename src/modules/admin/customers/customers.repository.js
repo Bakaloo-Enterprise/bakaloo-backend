@@ -107,6 +107,20 @@ export class AdminCustomersRepository {
     return rows
   }
 
+  async userName(id) {
+    const { rows } = await query(`SELECT name FROM users WHERE id = $1`, [id])
+    return rows[0]?.name ?? null
+  }
+
+  /** Notifications this customer received, newest first. personal = only staff-to-customer messages. */
+  async notificationHistory(userId, { personal, limit }) {
+    const { rows } = await query(
+      `SELECT id, title, body, type, data, is_read, read_at, created_at FROM notifications
+        WHERE user_id = $1 AND ($2::boolean = false OR type = 'ADMIN_MESSAGE') ORDER BY created_at DESC LIMIT $3`,
+      [userId, personal, limit])
+    return rows
+  }
+
   async findById(id) {
     const { rows: [customer] } = await query(
       `SELECT u.*, COALESCE(w.balance, 0) AS wallet_balance,

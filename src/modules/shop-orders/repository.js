@@ -132,6 +132,16 @@ function formatRow(row) {
 
 export class ShopOrdersRepository {
   /**
+   * A pooled connection for the service's transactions (status changes, rider assignment, cancel, refund all
+   * call `this.repo.getClient()`). This method was missing — the module only re-exported `getClient` at file
+   * level — so every one of those operations failed with "this.repo.getClient is not a function" against a real
+   * repository; unit tests passed because they mock the repository.
+   */
+  getClient() {
+    return getClient()
+  }
+
+  /**
    * Build the WHERE clause + parameter array for the listing/export
    * filter set. Returns the SQL fragment (without the leading `WHERE`)
    * and the appended parameter list — caller is responsible for the

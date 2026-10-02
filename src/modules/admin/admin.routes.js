@@ -11,12 +11,18 @@ import {
 
 // New sub-modules
 import adminAuthRoutes from './auth/auth.routes.js'
+import featuresRoutes from '../features/features.routes.js'
 import adminDashboardRoutes from './dashboard/dashboard.routes.js'
 import adminOrderRoutes from './orders/orders.routes.js'
 import adminRefundRequestsRoutes from './refund-requests/refund-requests.routes.js'
 import adminProductRoutes from './products/products.routes.js'
 import adminCustomerRoutes from './customers/customers.routes.js'
 import adminAbandonedCartsRoutes from './abandoned-carts/abandoned-carts.routes.js'
+import adminWhatsappCrmRoutes from './whatsapp-crm/whatsapp-crm.routes.js'
+import procurementRoutes from '../procurement/procurement.routes.js'
+import catalogBulkRoutes from '../catalog-bulk/catalog-bulk.routes.js'
+import businessAnalyticsRoutes from '../business-analytics/business-analytics.routes.js'
+import adminTeamChatRoutes from './team-chat/team-chat.routes.js'
 import adminCustomerSegmentsRoutes from './customer-segments/customer-segments.routes.js'
 import adminAreaSegmentsRoutes from './area-segments/area-segments.routes.js'
 import adminRiderRoutes from './riders/riders.routes.js'
@@ -78,6 +84,7 @@ export default async function adminRoutes(fastify) {
 
   // ─── New Sub-Modules ────────────────────────────────
   fastify.register(adminAuthRoutes, { prefix: '/auth' })
+  fastify.register(featuresRoutes)
   fastify.register(adminDashboardRoutes, { prefix: '/dashboard' })
   fastify.register(adminOrderRoutes, { prefix: '/orders' })
   fastify.register(adminRefundRequestsRoutes, { prefix: '/refund-requests' })
@@ -86,6 +93,11 @@ export default async function adminRoutes(fastify) {
   fastify.register(adminProductRoutes, { prefix: '/products' })
   fastify.register(adminCustomerRoutes, { prefix: '/customers' })
   fastify.register(adminAbandonedCartsRoutes, { prefix: '/abandoned-carts' })
+  fastify.register(adminWhatsappCrmRoutes, { prefix: '/crm' })
+  fastify.register(procurementRoutes, { prefix: '/procurement' })
+  fastify.register(catalogBulkRoutes, { prefix: '/catalog-bulk' })
+  fastify.register(businessAnalyticsRoutes, { prefix: '/business-analytics' })
+  fastify.register(adminTeamChatRoutes, { prefix: '/chat' })
   fastify.register(adminCustomerSegmentsRoutes, { prefix: '/customer-segments' })
   fastify.register(adminAreaSegmentsRoutes, { prefix: '/area-segments' })
   fastify.register(adminRiderRoutes, { prefix: '/riders' })

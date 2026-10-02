@@ -18,6 +18,8 @@ import {
   startReportPrecomputeWorker,
   startAddressPurgeWorker,
   startLedgerBillingWorker,
+  whatsappInboundQueue,
+  startWhatsappInboundWorker,
 } from '../config/bullmq.js'
 
 export async function startWorkerRuntime() {
@@ -61,6 +63,10 @@ export async function startWorkerRuntime() {
     '../workers/ledger-billing.worker.js'
   )
 
+  const { createWhatsappInboundProcessor, scheduleWhatsappSweep } = await import(
+    '../workers/whatsapp-inbound.worker.js'
+  )
+
   const { startEventLoopMonitor } = await import(
     '../utils/event-loop-monitor.js'
   )
@@ -92,6 +98,10 @@ export async function startWorkerRuntime() {
   // Ledger-billing worker — daily B2B credit-ledger cycle open + overdue
   // sweep (see modules/ledger).
   startLedgerBillingWorker(createLedgerBillingProcessor())
+  // WhatsApp CRM — applies stored Meta webhook events (customer messages and
+  // delivery statuses) and sweeps events whose job was lost. Idle (no jobs)
+  // when WHATSAPP_ENABLED is false.
+  startWhatsappInboundWorker(createWhatsappInboundProcessor())
 
   // Event-loop blocking detector (task 13.6) — logs warning when
   // the event loop is blocked for >100ms.
@@ -130,6 +140,15 @@ export async function startWorkerRuntime() {
     logger.warn(
       { err: err.message },
       'Ledger-billing daily cron registration failed'
+    )
+  }
+
+  try {
+    await scheduleWhatsappSweep(whatsappInboundQueue)
+  } catch (err) {
+    logger.warn(
+      { err: err.message },
+      'WhatsApp inbound sweep registration failed'
     )
   }
 

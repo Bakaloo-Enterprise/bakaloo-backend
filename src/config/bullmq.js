@@ -227,6 +227,23 @@ export const ledgerBillingQueue = new Queue('ledger-billing', {
   },
 })
 
+/**
+ * WhatsApp inbound queue — processes stored Meta webhook events (customer
+ * messages + delivery statuses). The job carries only the wa_webhook_events id;
+ * the payload is read from Postgres, so Redis loss never loses a message.
+ *   - attempts 8 with exponential backoff (5s, 10s, 20s ...) so a status that
+ *     raced ahead of our own "message sent" write is retried shortly after
+ */
+export const whatsappInboundQueue = new Queue('whatsapp-inbound', {
+  connection,
+  defaultJobOptions: {
+    attempts: 8,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: { age: 24 * 3600 },
+    removeOnFail: { age: 7 * 24 * 3600 },
+  },
+})
+
 // ─── WORKERS ─────────────────────────────────────────────
 
 const workers = []
@@ -590,6 +607,31 @@ export function startLedgerBillingWorker(processor) {
 }
 
 /**
+ * Start WhatsApp inbound worker (webhook event processing + stale-event sweep)
+ */
+export function startWhatsappInboundWorker(processor) {
+  const worker = new Worker('whatsapp-inbound', processor, {
+    connection,
+    concurrency: 4,
+  })
+
+  worker.on('completed', (job) => {
+    logger.debug({ jobId: job.id, name: job.name }, 'WhatsApp inbound job completed')
+  })
+
+  worker.on('failed', (job, err) => {
+    logger.error(
+      { jobId: job?.id, name: job?.name, attemptsMade: job?.attemptsMade, err: err.message },
+      'WhatsApp inbound job failed'
+    )
+  })
+
+  workers.push(worker)
+  logger.info('WhatsApp inbound worker started')
+  return worker
+}
+
+/**
  * Close all queues and workers (graceful shutdown)
  */
 export async function closeBullMQ() {
@@ -608,5 +650,6 @@ export async function closeBullMQ() {
   await reportPrecomputeQueue.close()
   await addressPurgeQueue.close()
   await ledgerBillingQueue.close()
+  await whatsappInboundQueue.close()
   logger.info('BullMQ queues and workers closed')
 }

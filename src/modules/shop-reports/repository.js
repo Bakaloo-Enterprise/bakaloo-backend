@@ -115,8 +115,8 @@ export class ShopReportsRepository {
     const dataResult = await query(
       `SELECT DATE(created_at) as date,
               SUM(total_amount) as gross_revenue,
-              SUM(CASE WHEN status = 'refunded' THEN total_amount ELSE 0 END) as refunded,
-              SUM(CASE WHEN status != 'refunded' THEN total_amount ELSE 0 END) as net_revenue
+              SUM(CASE WHEN status = 'REFUNDED' THEN total_amount ELSE 0 END) as refunded,
+              SUM(CASE WHEN status != 'REFUNDED' THEN total_amount ELSE 0 END) as net_revenue
        FROM orders ${where}
        GROUP BY DATE(created_at)
        ORDER BY date DESC
@@ -136,7 +136,7 @@ export class ShopReportsRepository {
   async getRefunds(shopId, filters, page, limit) {
     const offset = (page - 1) * limit
     const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const allConditions = ['shop_id = $1', ...conditions, "status = 'refunded'"]
+    const allConditions = ['shop_id = $1', ...conditions, "status = 'REFUNDED'"]
     const where = `WHERE ${allConditions.join(' AND ')}`
     const allValues = [shopId, ...values]
 
@@ -206,7 +206,7 @@ export class ShopReportsRepository {
     const offset = (page - 1) * limit
     const { conditions, values, nextIndex } = this._buildDateFilters(filters)
     const prefixed = conditions.map((c) => c.replace('created_at', 'sp.created_at'))
-    const allConditions = ['sp.shop_id = $1', ...prefixed, 'sp.stock <= 10']
+    const allConditions = ['sp.shop_id = $1', ...prefixed, 'sp.stock_quantity <= 10']
     const where = `WHERE ${allConditions.join(' AND ')}`
     const allValues = [shopId, ...values]
 
@@ -216,11 +216,11 @@ export class ShopReportsRepository {
     )
 
     const dataResult = await query(
-      `SELECT sp.id, sp.product_id, p.name as product_name, sp.stock, sp.price
+      `SELECT sp.id, sp.product_id, p.name as product_name, sp.stock_quantity AS stock, sp.price
        FROM shop_products sp
        JOIN products p ON p.id = sp.product_id
        ${where}
-       ORDER BY sp.stock ASC
+       ORDER BY sp.stock_quantity ASC
        LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
       [...allValues, limit, offset]
     )
@@ -238,7 +238,7 @@ export class ShopReportsRepository {
     const offset = (page - 1) * limit
     const { conditions, values, nextIndex } = this._buildDateFilters(filters)
     const prefixed = conditions.map((c) => c.replace('created_at', 'al.created_at'))
-    const allConditions = ['al.shop_id = $1', ...prefixed]
+    const allConditions = ['al.actor_shop_id = $1', ...prefixed]
     const where = `WHERE ${allConditions.join(' AND ')}`
     const allValues = [shopId, ...values]
 
@@ -248,13 +248,13 @@ export class ShopReportsRepository {
     )
 
     const dataResult = await query(
-      `SELECT al.actor_user_id, u.full_name as staff_name,
+      `SELECT al.actor_user_id, u.name as staff_name,
               al.action, COUNT(*) as action_count,
               MAX(al.created_at) as last_activity
        FROM audit_logs al
        LEFT JOIN users u ON u.id = al.actor_user_id
        ${where}
-       GROUP BY al.actor_user_id, u.full_name, al.action
+       GROUP BY al.actor_user_id, u.name, al.action
        ORDER BY action_count DESC
        LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
       [...allValues, limit, offset]
@@ -283,13 +283,13 @@ export class ShopReportsRepository {
     )
 
     const dataResult = await query(
-      `SELECT o.rider_id, u.full_name as rider_name,
+      `SELECT o.rider_id, u.name as rider_name,
               COUNT(o.id) as deliveries,
-              AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.dispatched_at))) as avg_delivery_seconds
+              AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.assigned_at))) as avg_delivery_seconds
        FROM orders o
        JOIN users u ON u.id = o.rider_id
        ${where}
-       GROUP BY o.rider_id, u.full_name
+       GROUP BY o.rider_id, u.name
        ORDER BY deliveries DESC
        LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
       [...allValues, limit, offset]
@@ -308,23 +308,23 @@ export class ShopReportsRepository {
     const offset = (page - 1) * limit
     const { conditions, values, nextIndex } = this._buildDateFilters(filters)
     const prefixed = conditions.map((c) => c.replace('created_at', 'o.created_at'))
-    const allConditions = ['o.shop_id = $1', ...prefixed, 'o.coupon_id IS NOT NULL']
+    const allConditions = ['o.shop_id = $1', ...prefixed, 'o.coupon_code IS NOT NULL']
     const where = `WHERE ${allConditions.join(' AND ')}`
     const allValues = [shopId, ...values]
 
     const countResult = await query(
-      `SELECT COUNT(DISTINCT o.coupon_id) as total FROM orders o ${where}`,
+      `SELECT COUNT(DISTINCT o.coupon_code) as total FROM orders o ${where}`,
       allValues
     )
 
     const dataResult = await query(
-      `SELECT o.coupon_id, c.code as coupon_code,
+      `SELECT c.id AS coupon_id, o.coupon_code AS coupon_code,
               COUNT(o.id) as usage_count,
               SUM(o.discount_amount) as total_discount
        FROM orders o
-       JOIN coupons c ON c.id = o.coupon_id
+       LEFT JOIN coupons c ON c.code = o.coupon_code
        ${where}
-       GROUP BY o.coupon_id, c.code
+       GROUP BY c.id, o.coupon_code
        ORDER BY usage_count DESC
        LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
       [...allValues, limit, offset]

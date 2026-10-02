@@ -280,6 +280,9 @@ export const listStockMovementsQuerySchema = z
         'CANCELLATION_RESTORE',
         'DAMAGED_STOCK',
         'RETURN_STOCK',
+        'PROCUREMENT_RECEIPT',
+        'PROCUREMENT_REVERSAL',
+        'BULK_UPDATE',
       ])
       .optional(),
     actor_user_id: z.string().uuid().optional(),

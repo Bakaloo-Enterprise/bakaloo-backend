@@ -135,9 +135,27 @@ export class AdminCustomersService {
     return { buffer, filename: `customers-${Date.now()}.csv` }
   }
 
-  async sendPersonalNotification(userId, title, body, fastify) {
-    if (!fastify) return false
-    fastify.emitNotification(userId, { title, body, type: 'ADMIN_MESSAGE' })
-    return true
+  /**
+   * A message from staff to ONE customer. It is saved (so it shows in the customer's in-app inbox and in the profile's
+   * history), shown live if the app is open, and sent as a phone push to every device the customer registered.
+   */
+  async sendPersonalNotification(userId, title, body, fastify, sender = {}) {
+    const target = await repo.findById(userId)
+    if (!target) throw Object.assign(new Error('Customer not found'), { statusCode: 404 })
+    const svc = new NotificationsService(new NotificationsRepository(), fastify ?? null)
+    const sentByName = sender.name ?? (sender.id ? await repo.userName(sender.id) : null)
+    const notification = await svc.sendNotification(userId, {
+      title, body, type: 'ADMIN_MESSAGE', data: { sentBy: sender.id ?? null, sentByName },
+    })
+    return notification
+  }
+
+  /** Notifications this customer received. `personal` = only the ones staff sent to them by hand. */
+  async notificationHistory(userId, { personal = true, limit = 50 } = {}) {
+    const rows = await repo.notificationHistory(userId, { personal, limit })
+    return rows.map((n) => ({
+      id: n.id, title: n.title, body: n.body, type: n.type, personal: n.type === 'ADMIN_MESSAGE', isRead: n.is_read, readAt: n.read_at, createdAt: n.created_at,
+      sentByName: n.data?.sentByName ?? null,
+    }))
   }
 }

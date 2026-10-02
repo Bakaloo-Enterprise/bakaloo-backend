@@ -159,6 +159,30 @@ const envSchema = z.object({
   // https://2factor.in/API/V1 which is the stable, non-configurable endpoint.
   SMS_PROVIDER: z.enum(['2factor', 'none']).default('none'),
 
+  // WhatsApp CRM — Meta WhatsApp Cloud API, one business number.
+  // Everything is optional so the API boots without WhatsApp configured:
+  // the webhook fails CLOSED (rejects) and sending throws a clear error.
+  WHATSAPP_ENABLED: booleanFromEnv.default(false),
+  // Customer web app base URL (https, no trailing slash) — used to build the cart link in WhatsApp cart reminders.
+  CUSTOMER_APP_URL: z.string().url().optional(),
+  // Graph API version. v25.0 is supported until 2028-07-29 (v21.0, which some
+  // reference projects pin, expires 2027-01-21). Check Meta's version table
+  // before changing: developers.facebook.com/docs/graph-api/changelog/versions
+  WHATSAPP_API_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v25.0'),
+  // Override of https://graph.facebook.com (local mock for tests, or a corporate proxy). Leave unset in production.
+  WHATSAPP_API_BASE_URL: z.string().url().optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_WABA_ID: z.string().optional(),
+  // Permanent System-User token (never a temporary 24h token in production).
+  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
+  // Any random string you also type into Meta's webhook "Verify token" box.
+  WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  // Meta App Secret — used to verify webhook signatures. Comma-separate if
+  // several Meta apps post to this server.
+  META_APP_SECRET: z.string().optional(),
+  // Optional: key for secrets saved from the dashboard (WhatsApp settings). Falls back to JWT_ACCESS_SECRET.
+  SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
+
   // Firebase FCM
   FIREBASE_PROJECT_ID: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),

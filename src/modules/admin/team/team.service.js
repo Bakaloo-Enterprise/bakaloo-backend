@@ -2,8 +2,21 @@ import { TeamRepository } from './team.repository.js'
 import { logAdminActivity } from '../../../utils/activityLogger.js'
 import { generateTempPassword } from '../../../utils/tempPassword.js'
 import bcrypt from 'bcrypt'
+import { query } from '../../../config/database.js'
+import { isDeveloper } from '../../features/feature-access.js'
 
 const repo = new TeamRepository()
+
+/**
+ * A Developer Super Admin is the superior role: nobody else may change, deactivate or reset the password of one
+ * (that would be a way to take the account over). Only another developer can.
+ */
+async function assertNotProtectedDeveloper(targetId, callerId) {
+    const { rows } = await query(`SELECT is_developer FROM users WHERE id = $1`, [targetId])
+    if (rows[0]?.is_developer === true && !(await isDeveloper(callerId))) {
+        throw { statusCode: 403, code: 'DEVELOPER_PROTECTED', message: 'Only a Developer Super Admin can change a developer account.' }
+    }
+}
 
 export class TeamService {
     /* ── Roles ── */
@@ -69,6 +82,7 @@ export class TeamService {
     }
 
     async updateMember(id, data, adminId, ip) {
+        await assertNotProtectedDeveloper(id, adminId)
         const member = await repo.updateMember(id, {
             roleId: data.role_id,
             isActive: data.is_active,
@@ -80,6 +94,7 @@ export class TeamService {
     }
 
     async removeMember(id, adminId, ip) {
+        await assertNotProtectedDeveloper(id, adminId)
         const ok = await repo.removeMember(id)
         if (ok) {
             logAdminActivity(adminId, 'REMOVE_MEMBER', 'user', id, null, null, ip)
@@ -95,6 +110,7 @@ export class TeamService {
      * JWT they held is invalidated immediately (session_version bump).
      */
     async resetMemberPassword(id, adminId, ip) {
+        await assertNotProtectedDeveloper(id, adminId)
         const member = await repo.findMemberById(id)
         if (!member) return null
 

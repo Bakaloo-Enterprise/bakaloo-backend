@@ -67,3 +67,12 @@ export function verifyPickupSignature({ token, version = QR_TOKEN_VERSION, signa
   if (expected.length !== provided.length) return false
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
 }
+
+/**
+ * The exact string printed in a pickup QR: `version.token.signature` (no field contains a '.', so a plain
+ * split is unambiguous). The invoice and the store POS's package label both print this; the rider app parses it
+ * back into { v, token, sig } for POST /pickup-tokens/verify.
+ */
+export function buildPickupQrPayload({ token, version = QR_TOKEN_VERSION }) {
+  return `${version}.${token}.${signPickupPayload({ token, version })}`
+}

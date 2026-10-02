@@ -1,3 +1,4 @@
+import { installFeatureGate } from './modules/features/feature-access.js'
 import Fastify from 'fastify'
 import { env } from './config/env.js'
 import { query } from './config/database.js'
@@ -111,6 +112,12 @@ export const buildApp = async () => {
   // `app.permissionAuditRoutes` so `src/server.js` can run the audit
   // after `app.ready()` and decide whether to abort boot per task 2.7.
   app.decorate('permissionAuditRoutes', installRouteCollector(app))
+
+  // ─── FEATURE LOCKS (migration 154) ───────────────────────────
+  // Features still in development (WhatsApp CRM, team chat, procurement, catalog bulk, POS, business analytics) are
+  // usable only by Developer Super Admins until a developer releases them. One global gate, installed before the
+  // module routes so it covers their prefixes without editing those modules.
+  installFeatureGate(app)
 
   // ─── MODULE ROUTES ─────────────────────────────────────
 
@@ -352,6 +359,7 @@ export const buildApp = async () => {
   await app.register(import('./modules/shop-orders/routes.js'), {
     prefix: '/api/v1/shop-orders',
   })
+  await app.register(import('./modules/pos/pos.routes.js'), { prefix: '/api/v1/pos' })
 
   // Shop Transactions — read-only append-only ledger
   // (write side is exposed as LedgerWriteService for orders/refunds/payouts)
@@ -571,6 +579,11 @@ export const buildApp = async () => {
       },
     }, controller.webhook.bind(controller))
   }, { prefix: '/api/webhook' })
+
+  // ─── WHATSAPP WEBHOOK (no user auth — verified by Meta's HMAC signature) ──
+  await app.register(import('./modules/whatsapp-crm/webhook.routes.js'), {
+    prefix: '/api/webhook',
+  })
 
   // ─── HEALTH CHECKS ─────────────────────────────────────
   app.get('/', {

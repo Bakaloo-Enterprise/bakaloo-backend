@@ -64,8 +64,13 @@ export class AdminCustomersController {
 
   async sendNotification(request, reply) {
     const { title, body } = request.body
-    await svc.sendPersonalNotification(request.params.id, title, body, request.server)
+    await svc.sendPersonalNotification(request.params.id, title, body, request.server, { id: request.user.id })
     return success(null, 'Notification sent')
+  }
+
+  async getNotifications(request) {
+    const { personal = true, limit = 50 } = request.query
+    return success(await svc.notificationHistory(request.params.id, { personal, limit }), 'Notifications fetched')
   }
 
   async toggleBlock(request, reply) {

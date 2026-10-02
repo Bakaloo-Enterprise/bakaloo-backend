@@ -116,3 +116,8 @@ export const toggleBlockSchema = {
     properties: { blocked: { type: 'boolean' } },
   },
 }
+
+export const customerNotificationsSchema = {
+  params: { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: uuidPattern } } },
+  querystring: { type: 'object', properties: { personal: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 100 } } },
+}
