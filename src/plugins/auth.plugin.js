@@ -239,12 +239,14 @@ async function authPlugin(fastify) {
     return async function (request, reply) {
       const { id } = request.user
       const { rows } = await query(
-        `SELECT COALESCE(r.permissions, '[]'::jsonb) AS permissions
+        `SELECT COALESCE(r.permissions, '[]'::jsonb) AS permissions, (u.is_developer AND u.is_active) AS is_developer
          FROM users u
          LEFT JOIN roles r ON r.id = u.role_id
          WHERE u.id = $1`,
         [id]
       )
+      // A Developer Super Admin is the superior role: it never needs a role attached to pass a permission check.
+      if (rows[0]?.is_developer === true) return
       const perms = rows[0]?.permissions || []
       if (!perms.includes(permission)) {
         reply.code(403).send({

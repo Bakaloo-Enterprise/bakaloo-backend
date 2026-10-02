@@ -14,6 +14,43 @@ export class TeamRepository {
         return rows
     }
 
+    async findRoleByName(name, exceptId = null) {
+        const { rows: [role] } = await query(
+            `SELECT id, name FROM roles WHERE lower(btrim(name)) = lower(btrim($1)) AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+            [name, exceptId]
+        )
+        return role || null
+    }
+
+    async countMembersWithRole(id) {
+        const { rows: [row] } = await query(`SELECT COUNT(*)::int AS n FROM users WHERE role_id = $1`, [id])
+        return row.n
+    }
+
+    /** Who is asking: developer / HQ tier flags plus the permissions on their role. */
+    async findAccessOf(userId) {
+        const { rows: [row] } = await query(
+            `SELECT u.platform_role, (u.is_developer AND u.is_active) AS is_developer,
+                    r.is_system AS role_is_system, r.name AS role_name,
+                    COALESCE(r.permissions, '[]'::jsonb) AS permissions
+               FROM users u LEFT JOIN roles r ON r.id = u.role_id
+              WHERE u.id = $1`,
+            [userId]
+        )
+        return row || null
+    }
+
+    /** Shop staff are tied to shops; they must never be turned into HQ users by a role change. */
+    async isShopStaff(userId) {
+        const { rowCount } = await query(`SELECT 1 FROM shop_staff WHERE user_id = $1 LIMIT 1`, [userId])
+        return rowCount > 0
+    }
+
+    async findPlatformRole(userId) {
+        const { rows: [row] } = await query(`SELECT platform_role FROM users WHERE id = $1`, [userId])
+        return row?.platform_role ?? null
+    }
+
     async findRoleById(id) {
         const { rows: [role] } = await query('SELECT * FROM roles WHERE id = $1', [id])
         return role || null
@@ -94,23 +131,32 @@ export class TeamRepository {
         return member || null
     }
 
-    async inviteMember({ name, email, phone, roleId, passwordHash }) {
+    /**
+     * platform_role is what lets a team member log in at all (HQ login branch); force_password_change makes them
+     * replace the password the inviter typed on first login. users.phone is NOT NULL, so a member invited without a
+     * phone gets a clearly-fake unique placeholder (never a dialable number).
+     */
+    async inviteMember({ name, email, phone, roleId, passwordHash, platformRole }) {
         const { rows: [user] } = await query(
-            `INSERT INTO users (name, email, phone, role, role_id, password_hash, is_active)
-       VALUES ($1, $2, $3, 'ADMIN', $4, $5, true)
+            `INSERT INTO users (name, email, phone, role, role_id, platform_role, password_hash, is_active, force_password_change)
+       VALUES ($1, $2, COALESCE($3, 'TM-' || substr(md5(random()::text || clock_timestamp()::text), 1, 10)), 'ADMIN', $4, $5, $6, true, true)
        RETURNING id, name, email, phone, role_id, is_active, created_at`,
-            [name, email, phone || null, roleId, passwordHash]
+            [name, email, phone || null, roleId, platformRole, passwordHash]
         )
         return user
     }
 
-    async updateMember(id, { roleId, isActive }) {
+    async updateMember(id, { roleId, isActive, platformRole }) {
         const sets = []
         const params = []
         let idx = 1
 
         if (roleId !== undefined) { sets.push(`role_id = $${idx++}`); params.push(roleId) }
         if (isActive !== undefined) { sets.push(`is_active = $${idx++}`); params.push(isActive) }
+        if (platformRole !== undefined) { sets.push(`platform_role = $${idx++}`); params.push(platformRole) }
+        // A changed role / access level must reach the person's live session straight away.
+        // ...and so must a switch-off: without this a deactivated member's existing login keeps working until it expires.
+        if (roleId !== undefined || platformRole !== undefined || isActive !== undefined) sets.push(`session_version = session_version + 1`)
 
         if (sets.length === 0) return this.findMemberById(id)
 
@@ -127,14 +173,19 @@ export class TeamRepository {
     async removeMember(id) {
         // Instead of deleting, deactivate the user
         const { rowCount } = await query(
-            `UPDATE users SET is_active = false, role_id = NULL, updated_at = NOW() WHERE id = $1 AND role = 'ADMIN'`,
+            `UPDATE users SET is_active = false, role_id = NULL, session_version = session_version + 1, updated_at = NOW() WHERE id = $1 AND role = 'ADMIN'`,
             [id]
         )
         return rowCount > 0
     }
 
     async findByEmail(email) {
-        const { rows: [user] } = await query('SELECT id FROM users WHERE email = $1', [email])
+        const { rows: [user] } = await query('SELECT id FROM users WHERE lower(email) = lower($1)', [email])
+        return user || null
+    }
+
+    async findByPhone(phone) {
+        const { rows: [user] } = await query('SELECT id FROM users WHERE phone = $1', [phone])
         return user || null
     }
 

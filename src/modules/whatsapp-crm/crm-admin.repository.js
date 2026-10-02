@@ -61,7 +61,7 @@ export class CrmAdminRepository {
       `SELECT u.id, u.name, u.email, r.name AS role_name
          FROM users u LEFT JOIN roles r ON r.id = u.role_id
         WHERE u.role = 'ADMIN' AND u.is_active = true AND u.is_blocked = false
-          AND (u.platform_role IN ('SUPER_ADMIN','ADMIN') OR COALESCE(r.permissions,'[]'::jsonb) ? 'crm.inbox.view')
+          AND ((u.platform_role IN ('SUPER_ADMIN','ADMIN') AND (u.role_id IS NULL OR r.is_system)) OR COALESCE(r.permissions,'[]'::jsonb) ? 'crm.inbox.view')
         ORDER BY lower(COALESCE(u.name, u.email))`,
     )
     return rows
@@ -134,7 +134,7 @@ export class CrmAdminRepository {
          LEFT JOIN roles r ON r.id = a.role_id
          LEFT JOIN wa_conversations c ON c.assigned_to = a.id
         WHERE a.role = 'ADMIN' AND a.is_active = true AND a.is_blocked = false
-          AND (a.platform_role IN ('SUPER_ADMIN','ADMIN') OR COALESCE(r.permissions,'[]'::jsonb) ? 'crm.inbox.view')
+          AND ((a.platform_role IN ('SUPER_ADMIN','ADMIN') AND (a.role_id IS NULL OR r.is_system)) OR COALESCE(r.permissions,'[]'::jsonb) ? 'crm.inbox.view')
         GROUP BY a.id ORDER BY active DESC, name`,
     )
     const { rows: un } = await query(

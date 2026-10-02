@@ -24,7 +24,7 @@ export class ChatRepository {
   /** Active dashboard user, with what chat needs to know about them. Null when not eligible. */
   async loadAccess(userId) {
     const { rows } = await query(
-      `SELECT u.id, u.name, u.platform_role, COALESCE(r.permissions, '[]'::jsonb) AS permissions,
+      `SELECT u.id, u.name, u.platform_role, u.role_id, r.is_system AS role_is_system, COALESCE(r.permissions, '[]'::jsonb) AS permissions,
               COALESCE((SELECT array_agg(ss.shop_id) FROM shop_staff ss WHERE ss.user_id = u.id AND ss.is_active AND ss.deleted_at IS NULL), '{}') AS shop_ids
          FROM users u LEFT JOIN roles r ON r.id = u.role_id
         WHERE u.id = $1 AND u.role = 'ADMIN' AND u.is_active = true`,
@@ -37,7 +37,8 @@ export class ChatRepository {
       userId: u.id,
       name: u.name,
       isHq: u.platform_role != null,
-      canManage: HQ_MANAGERS.includes(u.platform_role) || perms.includes('chat.manage'),
+      // a custom role decides for its holder; HQ levels with no role / a built-in role keep full control
+      canManage: (HQ_MANAGERS.includes(u.platform_role) && !(u.role_id && u.role_is_system === false)) || perms.includes('chat.manage'),
       shopIds: u.shop_ids ?? [],
     }
   }

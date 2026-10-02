@@ -33,13 +33,16 @@ const HQ_BYPASS = new Set(['SUPER_ADMIN', 'ADMIN'])
 /** @returns {Promise<{ userId: string, isSuper: boolean, has: (p: string) => boolean }>} */
 export async function loadCrmAccess(userId) {
   const { rows } = await query(
-    `SELECT u.platform_role, COALESCE(r.permissions, '[]'::jsonb) AS permissions
+    `SELECT u.platform_role, u.role_id, r.is_system AS role_is_system, COALESCE(r.permissions, '[]'::jsonb) AS permissions
        FROM users u LEFT JOIN roles r ON r.id = u.role_id
       WHERE u.id = $1 AND u.is_active = true`,
     [userId],
   )
   const row = rows[0]
-  const isSuper = HQ_BYPASS.has(row?.platform_role)
+  // Every team member signs in as platform ADMIN, so ADMIN alone cannot mean "everything": someone given a custom
+  // role is governed by that role. HQ levels with no role (or a built-in one) keep full access.
+  const hasCustomRole = Boolean(row?.role_id) && row?.role_is_system === false
+  const isSuper = HQ_BYPASS.has(row?.platform_role) && !hasCustomRole
   const perms = new Set(Array.isArray(row?.permissions) ? row.permissions : [])
   return { userId, isSuper, has: (p) => Boolean(row) && (isSuper || perms.has(p)) }
 }
