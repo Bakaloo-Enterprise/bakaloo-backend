@@ -219,4 +219,27 @@ describe.skipIf(!enabled)('Feature locks and Developer Super Admin', () => {
     await query(`UPDATE feature_flags SET released = false`)
     expect((await asAdmin('/api/v1/admin/business-analytics/overview')).json().code).toBe('FEATURE_LOCKED')
   })
+
+  it('WhatsApp Settings is readable by every signed-in admin while the CRM is locked — and nothing else on it is', async () => {
+    const U = '/api/v1/admin/crm/settings'
+    // reading: any admin, locked or not
+    for (const who of ['admin', 'superAdmin', 'support']) {
+      const r = await call('GET', U, { token: tok[who] })
+      expect(r.statusCode, who).toBe(200)
+      const d = r.json().data
+      expect(d.canManage, who).toBe(false) // no editing, no verify token
+      expect(d.fields.verifyToken.value, who).toBe('')
+      expect(JSON.stringify(d)).not.toMatch(/access_token_enc|app_secret_enc/)
+    }
+    // a developer is the manager
+    expect((await call('GET', U, { token: tok.dev })).json().data.canManage).toBe(true)
+    // signed-out is still a plain 401, never a settings page
+    expect((await call('GET', U)).statusCode).toBe(401)
+    // everything else on the same prefix stays locked: save, test-send, switch on/off, clear credentials, and the rest of the CRM
+    for (const [m, u] of [['PUT', U], ['POST', `${U}/test`], ['POST', `${U}/enable`], ['DELETE', `${U}/credentials`], ['GET', '/api/v1/admin/crm/conversations'], ['GET', '/api/v1/admin/crm/me']]) {
+      const r = await call(m, u, { token: tok.superAdmin, payload: m === 'GET' || m === 'DELETE' ? undefined : {} })
+      expect(r.statusCode, `${m} ${u}`).toBe(403)
+      expect(r.json().code, `${m} ${u}`).toBe('FEATURE_LOCKED')
+    }
+  })
 })

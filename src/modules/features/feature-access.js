@@ -27,9 +27,16 @@ export const FEATURE_PREFIXES = Object.freeze([
  */
 const ALWAYS_OPEN = new Set(['/api/v1/admin/procurement/me'])
 
-export function featureForUrl(url) {
+/**
+ * Read-only pages that stay visible to every signed-in admin while their feature is locked. GET only — saving,
+ * testing, switching on/off and clearing credentials on the same URL prefix remain locked.
+ */
+const OPEN_FOR_READING = new Set(['/api/v1/admin/crm/settings'])
+
+export function featureForUrl(url, method = 'GET') {
   const path = String(url || '').split('?')[0]
   if (ALWAYS_OPEN.has(path)) return null
+  if (String(method).toUpperCase() === 'GET' && OPEN_FOR_READING.has(path)) return null
   for (const [prefix, key] of FEATURE_PREFIXES) {
     if (path === prefix || path.startsWith(`${prefix}/`)) return key
   }
@@ -81,7 +88,7 @@ export async function loadFeatureAccess(userId) {
  */
 export function installFeatureGate(app) {
   app.addHook('onRequest', async (request, reply) => {
-    const key = featureForUrl(request.raw.url)
+    const key = featureForUrl(request.raw.url, request.method)
     if (!key) return
     if (!request.user) {
       await app.authenticate(request, reply)

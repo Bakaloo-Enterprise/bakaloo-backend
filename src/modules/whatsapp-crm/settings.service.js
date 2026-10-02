@@ -50,7 +50,7 @@ export class WhatsappSettingsService {
   }
 
   // ─── what the settings screen shows (never a secret) ───
-  async view({ origin = '' } = {}) {
+  async view({ origin = '', canManage = false } = {}) {
     const row = await this.repo.get()
     const cfg = resolveConfig(row, this.#secrets(row), this.env)
     const hasCore = Boolean(cfg.accessToken && cfg.phoneNumberId)
@@ -59,6 +59,7 @@ export class WhatsappSettingsService {
     const secret = (name, key) => ({ configured: Boolean(cfg[key]), masked: cfg[key] ? maskSecret(cfg[key], name === 'appSecret' ? { head: 0, tail: 4 } : undefined) : '', source: cfg.sources[key] })
     const webhook = await this.repo.webhookInfo().catch(() => ({ lastReceivedAt: null, last7d: 0 }))
     return {
+      canManage,
       state,
       enabled: cfg.enabled,
       enabledSource: cfg.enabledSource,
@@ -73,7 +74,7 @@ export class WhatsappSettingsService {
         accessToken: secret('accessToken', 'accessToken'),
         appSecret: secret('appSecret', 'appSecret'),
         // The verify token is not a credential: it is the word you paste into Meta, so managers may read it.
-        verifyToken: { configured: Boolean(cfg.verifyToken), value: cfg.verifyToken, source: cfg.sources.verifyToken },
+        verifyToken: { configured: Boolean(cfg.verifyToken), value: canManage ? cfg.verifyToken : '', source: cfg.sources.verifyToken },
       },
       webhook: { callbackUrl: origin ? `${origin}/api/webhook/whatsapp` : '/api/webhook/whatsapp', ...webhook },
     }
