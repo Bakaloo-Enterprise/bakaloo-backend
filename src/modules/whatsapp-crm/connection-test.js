@@ -29,7 +29,7 @@ function ago(ms) {
  *           webhook?: { lastReceivedAt: Date|null, last7d: number },
  *           sendTo?: string|null, now?: () => Date }} a
  */
-export async function runConnectionTest({ config, http, webhook = { lastReceivedAt: null, last7d: 0 }, sendTo = null, now = () => new Date() }) {
+export async function runConnectionTest({ config, http, webhook = { lastReceivedAt: null, last7d: 0 }, callbackUrl = null, sendTo = null, now = () => new Date() }) {
   const started = now().getTime()
   const checks = []
   const finish = (ok, level, headline) => ({ ok, level, headline, checks, testedAt: now().toISOString(), durationMs: now().getTime() - started })
@@ -82,7 +82,7 @@ export async function runConnectionTest({ config, http, webhook = { lastReceived
 
   if (!phoneOk) {
     for (const [id, label] of [['waba', 'WhatsApp Business Account'], ['templates', 'Message templates'], ['token', 'Token lifetime'], ['webhook', 'Incoming messages (webhook)']]) {
-      if (id === 'webhook') checks.push(webhookCheck(config, webhook, now))
+      if (id === 'webhook') checks.push(await webhookCheck(config, webhook, now, http, callbackUrl, false))
       else checks.push(step(id, label, 'skip', 'Skipped until the access token and Phone number ID work.'))
     }
     return finish(false, 'FAILED', 'Not connected — Meta did not accept the access token / Phone number ID.')
@@ -114,8 +114,8 @@ export async function runConnectionTest({ config, http, webhook = { lastReceived
   // 4 ─ token lifetime (only possible with the App ID + App Secret)
   checks.push(await tokenCheck(config, http, now))
 
-  // 5 ─ webhook
-  checks.push(webhookCheck(config, webhook, now))
+  // 5 ─ webhook (is Meta actually set up to send customer messages to us?)
+  checks.push(await webhookCheck(config, webhook, now, http, callbackUrl, true))
 
   // 6 ─ optional real message
   if (sendTo) {
@@ -170,20 +170,81 @@ async function tokenCheck(config, http, now) {
   }
 }
 
-function webhookCheck(config, webhook, now) {
+/**
+ * Replies only reach the inbox when ALL of these are true, so each one is checked and named:
+ *   1. a Verify token and the App Secret are saved here (the App Secret signs every event Meta sends; without it we reject them all)
+ *   2. the Business Account is subscribed to the app, so Meta forwards its messages
+ *   3. the app's webhook points at us and includes "messages"
+ *   4. an event has really arrived
+ * 2 and 3 are asked of Meta when the details needed to ask are saved.
+ */
+async function webhookCheck(config, webhook, now, http, callbackUrl, canAsk) {
+  const label = 'Incoming messages (webhook)'
   const needs = []
   if (!config.verifyToken) needs.push('a Verify token')
   if (!config.appSecret) needs.push('the App Secret')
   if (needs.length) {
-    return step('webhook', 'Incoming messages (webhook)', 'warn', `Customer replies cannot be received yet — ${needs.join(' and ')} ${needs.length > 1 ? 'are' : 'is'} missing.`, {
-      problem: { title: 'Set up the webhook to receive replies', cause: 'The webhook is how Meta sends us customer replies and “delivered / read” updates. It needs the verify token and the App Secret.', fixes: ['Add the Verify token and App Secret above.', 'Then paste the Callback URL and Verify token into Meta → WhatsApp → Configuration → Webhook and subscribe to “messages”.'], technical: {}, docs: null },
+    return step('webhook', label, 'warn', `Customer replies cannot be received yet — ${needs.join(' and ')} ${needs.length > 1 ? 'are' : 'is'} missing.`, {
+      problem: {
+        title: 'Customer replies are blocked until the App Secret is saved',
+        cause: 'Meta signs every message it sends us with your App Secret, and we refuse anything we cannot check. With no App Secret saved, every reply would be rejected, so nothing would show in the inbox.',
+        fixes: [
+          'Meta → App settings → Basic → copy the “App secret” (and the “App ID”) and paste them above, then press “Save only”.',
+          'Then press “Connect replies automatically” in the Receive replies box — it tells Meta where to send replies and subscribes to messages for you.',
+        ],
+      },
     })
   }
+
+  // Ask Meta (only possible once the Business Account ID is saved).
+  const asked = []
+  if (canAsk && http && config.wabaId) {
+    try {
+      const { data } = await http.get(`/${config.wabaId}/subscribed_apps`)
+      const apps = Array.isArray(data?.data) ? data.data : []
+      const mine = config.appId ? apps.some((a) => String(a?.whatsapp_business_api_data?.id ?? a?.id ?? '') === String(config.appId)) : apps.length > 0
+      if (!mine) {
+        return step('webhook', label, 'warn', 'Meta is not forwarding this WhatsApp number’s messages to your app yet.', {
+          problem: {
+            title: 'Your Business Account is not subscribed to your app',
+            cause: 'Even with the webhook address saved in Meta, Meta only sends events for a Business Account that has been subscribed to the app. Yours has not been, so no customer reply is ever sent to us.',
+            fixes: ['Press “Connect replies automatically” in the Receive replies box — it subscribes the account for you.', 'Or call Meta’s “subscribed_apps” for your Business Account yourself.'],
+          },
+        })
+      }
+      asked.push('Business Account is subscribed to your app')
+    } catch { /* could not ask — fall through to what we know locally */ }
+  }
+  if (canAsk && http && config.appId && config.appSecret) {
+    try {
+      const { data } = await http.get(`/${config.appId}/subscriptions`, { params: { access_token: `${config.appId}|${config.appSecret}` }, headers: { Authorization: false } })
+      const sub = (Array.isArray(data?.data) ? data.data : []).find((x) => x?.object === 'whatsapp_business_account')
+      const fields = (sub?.fields ?? []).map((f) => (typeof f === 'string' ? f : f?.name))
+      if (!sub || sub.active === false || !fields.includes('messages')) {
+        return step('webhook', label, 'warn', 'Your Meta app is not set to send customer messages to us yet.', {
+          problem: {
+            title: 'The webhook is not subscribed to “messages”',
+            cause: !sub ? 'Meta has no webhook saved for WhatsApp on this app.' : 'The webhook exists, but “messages” is not ticked, so customer replies are not sent.',
+            fixes: ['Press “Connect replies automatically” in the Receive replies box.', 'Or in Meta → WhatsApp → Configuration → Webhook fields, press Subscribe next to “messages”.'],
+          },
+        })
+      }
+      if (callbackUrl && sub.callback_url && sub.callback_url.replace(/\/+$/, '') !== callbackUrl.replace(/\/+$/, '')) {
+        return step('webhook', label, 'warn', 'Meta is sending events to a different address.', {
+          details: { metaCallbackUrl: sub.callback_url, expected: callbackUrl },
+          problem: { title: 'The webhook address in Meta is different', cause: `Meta sends to ${sub.callback_url}, but this server expects ${callbackUrl}.`, fixes: ['Press “Connect replies automatically” to point Meta at the right address.'] },
+        })
+      }
+      asked.push('webhook is subscribed to messages')
+    } catch { /* could not ask */ }
+  }
+
   if (webhook.lastReceivedAt) {
     const age = now().getTime() - new Date(webhook.lastReceivedAt).getTime()
-    return step('webhook', 'Incoming messages (webhook)', age > 14 * DAY ? 'warn' : 'pass', `Last message / update from Meta arrived ${ago(age)}.`, { details: { lastReceivedAt: new Date(webhook.lastReceivedAt).toISOString(), last7d: webhook.last7d } })
+    return step('webhook', label, age > 14 * DAY ? 'warn' : 'pass', `Last message / update from Meta arrived ${ago(age)}.`, { details: { lastReceivedAt: new Date(webhook.lastReceivedAt).toISOString(), last7d: webhook.last7d, confirmed: asked } })
   }
-  return step('webhook', 'Incoming messages (webhook)', 'warn', 'Nothing has arrived from Meta yet.', {
-    problem: { title: 'No incoming message received yet', cause: 'Either the webhook is not connected in Meta, or no customer has written yet.', fixes: ['Meta → WhatsApp → Configuration → Webhook: paste the Callback URL and Verify token shown below, then “Verify and save”.', 'Subscribe to the “messages” field.', 'Send a WhatsApp message to your business number from your own phone and test again.'], technical: {}, docs: null },
+  return step('webhook', label, 'warn', asked.length ? 'Set up in Meta — nothing has arrived yet. Send a WhatsApp message to your number to confirm.' : 'Nothing has arrived from Meta yet.', {
+    details: { confirmed: asked },
+    problem: { title: 'No incoming message received yet', cause: asked.length ? 'Meta says it is set up. Either no customer has written since, or the message is still on its way.' : 'Either the webhook is not connected in Meta, or no customer has written yet.', fixes: ['Press “Connect replies automatically” (needs App ID + App Secret), or in Meta → WhatsApp → Configuration → Webhook paste the Callback URL and Verify token, Verify and save, then subscribe to “messages”.', 'Send a WhatsApp message to your business number and check again.'] },
   })
 }

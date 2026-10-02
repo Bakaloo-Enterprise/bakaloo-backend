@@ -236,7 +236,7 @@ describe.skipIf(!enabled)('Feature locks and Developer Super Admin', () => {
     // signed-out is still a plain 401
     expect((await call('GET', U)).statusCode).toBe(401)
     // the four actions are not held back by the lock, but still need the permission: a non-manager is refused for that reason
-    for (const [m, u] of [['PUT', U], ['POST', `${U}/test`], ['POST', `${U}/enable`], ['DELETE', `${U}/credentials`]]) {
+    for (const [m, u] of [['PUT', U], ['POST', `${U}/test`], ['POST', `${U}/enable`], ['POST', `${U}/connect-replies`], ['DELETE', `${U}/credentials`]]) {
       const r = await call(m, u, { token: tok.support, payload: m === 'DELETE' ? undefined : {} })
       expect(r.statusCode, `${m} ${u}`).toBe(403)
       expect(r.json().code, `${m} ${u}`).toBe('PERMISSION_DENIED')

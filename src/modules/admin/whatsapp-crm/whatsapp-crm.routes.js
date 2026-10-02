@@ -37,6 +37,7 @@ export default async function adminWhatsappCrmRoutes(fastify) {
   fastify.get('/settings', ctrl.settingsView.bind(ctrl))
   route('put', '/settings', SETTINGS_MANAGE, S.saveSettingsSchema, ctrl.settingsSave)
   route('post', '/settings/test', SETTINGS_MANAGE, S.testSettingsSchema, ctrl.settingsTest)
+  route('post', '/settings/connect-replies', SETTINGS_MANAGE, undefined, ctrl.settingsConnectReplies)
   route('post', '/settings/enable', SETTINGS_MANAGE, S.enableSettingsSchema, ctrl.settingsEnable)
   route('delete', '/settings/credentials', SETTINGS_MANAGE, undefined, ctrl.settingsClear)
   route('get', '/me', INBOX_VIEW, undefined, ctrl.me)

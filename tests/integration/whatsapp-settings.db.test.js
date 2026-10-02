@@ -77,7 +77,7 @@ describe.skipIf(!enabled)('WhatsApp settings', () => {
       expect(raw.app_secret_enc).not.toContain(APP_SECRET)
       expect(raw.access_token_enc.startsWith('v1:')).toBe(true)
       expect(raw.phone_number_id).toBe('109876543210987')
-      const v = await svc.view({ origin: 'https://api.example.in' })
+      const v = await svc.view({ origin: 'https://api.example.in', canManage: true })
       expect(v).toMatchObject({ state: 'SAVED', fields: { phoneNumberId: { value: '109876543210987', source: 'dashboard' }, verifyToken: { value: 'my-verify-word-1' } } })
       expect(v.fields.accessToken).toEqual({ configured: true, masked: expect.stringMatching(/^EAAG…aaaa$/), source: 'dashboard' })
       expect(v.webhook.callbackUrl).toBe('https://api.example.in/api/webhook/whatsapp')
@@ -107,7 +107,8 @@ describe.skipIf(!enabled)('WhatsApp settings', () => {
     })
     it('can generate a verify token', async () => {
       await svc.save({ generateVerifyToken: true }, tok.hq.id)
-      expect((await svc.view()).fields.verifyToken.value).toMatch(/^bk_/)
+      expect((await svc.view({ canManage: true })).fields.verifyToken.value).toMatch(/^bk_/)
+      expect((await svc.view()).fields.verifyToken.value).toBe('') // anyone who may not manage never gets the token
     })
     it('survives a key change: secrets that cannot be read are treated as not set (no crash)', async () => {
       await svc.save(FULL, tok.hq.id)
@@ -219,10 +220,17 @@ describe.skipIf(!enabled)('WhatsApp settings', () => {
 
   describe('over HTTP', () => {
     it('401 without a token; 403 for an agent; allowed for a manager and HQ', async () => {
-      for (const [m, u] of [['GET', '/settings'], ['PUT', '/settings'], ['POST', '/settings/test'], ['POST', '/settings/enable'], ['DELETE', '/settings/credentials']]) {
+      // reading is open to every signed-in admin (read-only: no verify token, canManage false); everything that changes it needs the permission
+      expect((await call('GET', '/settings')).statusCode).toBe(401)
+      const ro = await call('GET', '/settings', { token: tok.agent.token })
+      expect(ro.statusCode).toBe(200)
+      expect(ro.json().data.canManage).toBe(false)
+      expect(ro.json().data.fields.verifyToken.value).toBe('')
+      for (const [m, u] of [['PUT', '/settings'], ['POST', '/settings/test'], ['POST', '/settings/enable'], ['POST', '/settings/connect-replies'], ['DELETE', '/settings/credentials']]) {
         expect((await call(m, u)).statusCode, `${m} ${u}`).toBe(401)
         expect((await call(m, u, { token: tok.agent.token, payload: {} })).statusCode, `${m} ${u} agent`).toBe(403)
       }
+      expect((await call('GET', '/settings', { token: tok.manager.token })).json().data.canManage).toBe(true)
       expect((await call('GET', '/settings', { token: tok.manager.token })).statusCode).toBe(200)
       expect((await call('GET', '/settings', { token: tok.hq.token })).statusCode).toBe(200)
     })

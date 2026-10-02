@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { decryptSecret, encryptSecret } from '../../utils/secret-box.js'
 import { CrmError } from './errors.js'
+import { explainMetaError, parseGraphError } from './meta-errors.js'
 import { runConnectionTest } from './connection-test.js'
 import { toWaId } from './phone.js'
 import { ALL_FIELDS, assertSettingsErrors, generateVerifyToken, maskSecret, resolveConfig, validateSettingsInput } from './settings.js'
@@ -21,8 +22,8 @@ export class WhatsappSettingsService {
    * @param {{ repo: import('./settings.repository.js').WhatsappSettingsRepository, env: object, logger?: object, now?: () => Date,
    *           makeHttp?: (cfg: object) => { get: Function, post: Function } }} deps
    */
-  constructor({ repo, env, logger = console, now = () => new Date(), makeHttp = defaultHttp }) {
-    Object.assign(this, { repo, env, logger, now, makeHttp })
+  constructor({ repo, env, logger = console, now = () => new Date(), makeHttp = defaultHttp, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+    Object.assign(this, { repo, env, logger, now, makeHttp, sleep })
     this.cache = null
     this.tests = new Map()
   }
@@ -121,7 +122,7 @@ export class WhatsappSettingsService {
    * Ask Meta. A passing test connects WhatsApp automatically (and switches it on); a failing one records why.
    * @param {{ sendTo?: string|null }} opts  a phone number to send the sample "hello_world" message to (optional)
    */
-  async test({ sendTo = null } = {}, userId) {
+  async test({ sendTo = null, origin = '' } = {}, userId) {
     this.#throttle(userId)
     let to = null
     if (sendTo) {
@@ -131,7 +132,7 @@ export class WhatsappSettingsService {
     const cfg = await this.resolved({ fresh: true })
     const http = cfg.accessToken && cfg.phoneNumberId ? this.makeHttp(cfg) : { get: async () => { throw new Error('not configured') }, post: async () => { throw new Error('not configured') } }
     const webhook = await this.repo.webhookInfo().catch(() => ({ lastReceivedAt: null, last7d: 0 }))
-    const result = await runConnectionTest({ config: cfg, http, webhook, sendTo: to, now: this.now })
+    const result = await runConnectionTest({ config: cfg, http, webhook, callbackUrl: origin ? `${origin}/api/webhook/whatsapp` : null, sendTo: to, now: this.now })
 
     const patch = { last_test: result, last_tested_at: this.now(), connection_status: result.ok ? 'CONNECTED' : 'FAILED' }
     if (result.ok) {
@@ -141,6 +142,54 @@ export class WhatsappSettingsService {
     await this.repo.update(patch, userId)
     this.invalidate()
     return result
+  }
+  /**
+   * Point Meta at this server and subscribe to customer messages, so replies and delivery ticks reach the inbox.
+   * Needs the details saved first (access token, Business Account ID, App ID, App Secret); a verify token is made if missing.
+   * Two calls: the app's webhook (callback URL + "messages" fields, signed with the app token), then the Business Account
+   * subscription. Each step is reported on its own, with what to do when Meta refuses.
+   */
+  async connectReplies({ origin = '' } = {}, userId) {
+    this.#throttle(userId)
+    const cfg = await this.resolved({ fresh: true })
+    const missing = []
+    if (!cfg.accessToken) missing.push('Access token')
+    if (!cfg.wabaId) missing.push('WhatsApp Business Account ID')
+    if (!cfg.appId) missing.push('App ID')
+    if (!cfg.appSecret) missing.push('App Secret')
+    if (missing.length) throw new CrmError(`Save these first, then try again: ${missing.join(', ')}.`, 400, 'MISSING_DETAILS', { missing })
+    if (!/^https:\/\//i.test(origin)) throw new CrmError('Meta needs a public https address to send replies to. Open the dashboard from your live site and try again.', 400, 'NEEDS_PUBLIC_URL')
+    const callbackUrl = `${origin.replace(/\/+$/, '')}/api/webhook/whatsapp`
+
+    let verifyToken = cfg.verifyToken
+    if (!verifyToken) {
+      verifyToken = generateVerifyToken()
+      await this.repo.update({ verify_token_enc: encryptSecret(verifyToken) }, userId)
+      this.invalidate()
+      // Meta calls our webhook while we save; the other API process may still hold the old settings for a few seconds.
+      await this.sleep(CACHE_MS + 1_000)
+    }
+
+    const http = this.makeHttp(cfg)
+    const steps = []
+    const run = async (id, label, fn) => {
+      try {
+        await fn()
+        steps.push({ id, label, status: 'pass' })
+        return true
+      } catch (err) {
+        const problem = explainMetaError(parseGraphError(err), { step: 'webhook' })
+        steps.push({ id, label, status: 'fail', summary: problem.title, problem })
+        return false
+      }
+    }
+
+    // 1 ─ the app's webhook. Meta calls our GET handshake while saving this, so our verify token must already be live.
+    const form = new URLSearchParams({ object: 'whatsapp_business_account', callback_url: callbackUrl, verify_token: verifyToken, fields: 'messages,message_template_status_update', access_token: `${cfg.appId}|${cfg.appSecret}` })
+    const first = await run('app', 'Meta app sends events to this server', () => http.post(`/${cfg.appId}/subscriptions`, form.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: false } }))
+    // 2 ─ the Business Account forwards its messages to the app
+    const second = await run('waba', 'Business Account is subscribed to your app', () => http.post(`/${cfg.wabaId}/subscribed_apps`, {}))
+    return { ok: first && second, callbackUrl, steps }
   }
 }
 

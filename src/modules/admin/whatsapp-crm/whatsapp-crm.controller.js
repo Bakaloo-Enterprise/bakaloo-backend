@@ -15,6 +15,13 @@ function fail(reply, err) {
   throw err
 }
 
+/** The public address this server is reached at (what Meta must call), from the proxy headers. */
+const originOf = (request) => {
+  const proto = request.headers['x-forwarded-proto'] ?? request.protocol
+  const host = request.headers['x-forwarded-host'] ?? request.headers.host
+  return host ? `${proto}://${host}` : ''
+}
+
 export class AdminWhatsappCrmController {
   async status() {
     const { botRepo } = getWhatsappServices()
@@ -82,9 +89,20 @@ export class AdminWhatsappCrmController {
   async settingsTest(request, reply) {
     const { settings } = getWhatsappServices()
     try {
-      const result = await settings.test({ sendTo: request.body?.sendTo }, request.user.id)
+      const result = await settings.test({ sendTo: request.body?.sendTo, origin: originOf(request) }, request.user.id)
       emitAudit('whatsapp.settings.test', { actor_user_id: request.user.id, actor_role: 'ADMIN', target_type: 'wa_settings', after: { ok: result.ok, level: result.level } })
       return success(result, result.ok ? 'Connected' : 'Connection failed')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
+  async settingsConnectReplies(request, reply) {
+    const { settings } = getWhatsappServices()
+    try {
+      const result = await settings.connectReplies({ origin: originOf(request) }, request.user.id)
+      emitAudit('whatsapp.settings.connect_replies', { actor_user_id: request.user.id, actor_role: 'ADMIN', target_type: 'wa_settings', after: { ok: result.ok, steps: result.steps.map((x) => `${x.id}:${x.status}`) } })
+      return success(result, result.ok ? 'Replies connected' : 'Replies could not be connected')
     } catch (err) {
       return fail(reply, err)
     }

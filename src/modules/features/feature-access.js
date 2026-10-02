@@ -36,6 +36,7 @@ const ALWAYS_OPEN = new Set(['/api/v1/admin/procurement/me'])
 const SETTINGS_PATHS = new Set([
   '/api/v1/admin/crm/settings',
   '/api/v1/admin/crm/settings/test',
+  '/api/v1/admin/crm/settings/connect-replies',
   '/api/v1/admin/crm/settings/enable',
   '/api/v1/admin/crm/settings/credentials',
 ])
