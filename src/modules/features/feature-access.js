@@ -28,15 +28,22 @@ export const FEATURE_PREFIXES = Object.freeze([
 const ALWAYS_OPEN = new Set(['/api/v1/admin/procurement/me'])
 
 /**
- * Read-only pages that stay visible to every signed-in admin while their feature is locked. GET only — saving,
- * testing, switching on/off and clearing credentials on the same URL prefix remain locked.
+ * The WhatsApp connection page (view, save, test, switch on/off, clear credentials) works even while the rest of the
+ * CRM is locked, so the business can connect its number before the CRM is released. The lock is the only thing
+ * lifted here: every write on these URLs still needs the crm.settings.manage permission, and anyone without it gets
+ * a read-only view (see settingsView).
  */
-const OPEN_FOR_READING = new Set(['/api/v1/admin/crm/settings'])
+const SETTINGS_PATHS = new Set([
+  '/api/v1/admin/crm/settings',
+  '/api/v1/admin/crm/settings/test',
+  '/api/v1/admin/crm/settings/enable',
+  '/api/v1/admin/crm/settings/credentials',
+])
 
-export function featureForUrl(url, method = 'GET') {
+export function featureForUrl(url) {
   const path = String(url || '').split('?')[0]
   if (ALWAYS_OPEN.has(path)) return null
-  if (String(method).toUpperCase() === 'GET' && OPEN_FOR_READING.has(path)) return null
+  if (SETTINGS_PATHS.has(path)) return null
   for (const [prefix, key] of FEATURE_PREFIXES) {
     if (path === prefix || path.startsWith(`${prefix}/`)) return key
   }
@@ -88,7 +95,7 @@ export async function loadFeatureAccess(userId) {
  */
 export function installFeatureGate(app) {
   app.addHook('onRequest', async (request, reply) => {
-    const key = featureForUrl(request.raw.url, request.method)
+    const key = featureForUrl(request.raw.url)
     if (!key) return
     if (!request.user) {
       await app.authenticate(request, reply)

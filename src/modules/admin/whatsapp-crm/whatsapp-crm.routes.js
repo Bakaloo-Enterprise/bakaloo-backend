@@ -32,8 +32,8 @@ export default async function adminWhatsappCrmRoutes(fastify) {
   route('get', '/status', INBOX_VIEW, undefined, ctrl.status)
 
   // Connection settings: credentials are saved encrypted and are never returned (only masked).
-  // Read-only view: any signed-in admin (the hook above authenticates). It hides the verify token and reports canManage;
-  // the four actions below still need crm.settings.manage and an unlocked CRM.
+  // The view: any signed-in admin (the hook above authenticates). It hides the verify token and reports canManage;
+  // the four actions below need crm.settings.manage. None of these five is held back by the CRM lock (see feature-access.js).
   fastify.get('/settings', ctrl.settingsView.bind(ctrl))
   route('put', '/settings', SETTINGS_MANAGE, S.saveSettingsSchema, ctrl.settingsSave)
   route('post', '/settings/test', SETTINGS_MANAGE, S.testSettingsSchema, ctrl.settingsTest)

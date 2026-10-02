@@ -220,26 +220,31 @@ describe.skipIf(!enabled)('Feature locks and Developer Super Admin', () => {
     expect((await asAdmin('/api/v1/admin/business-analytics/overview')).json().code).toBe('FEATURE_LOCKED')
   })
 
-  it('WhatsApp Settings is readable by every signed-in admin while the CRM is locked — and nothing else on it is', async () => {
+  it('WhatsApp Settings works while the CRM is locked: managers get everything, others a read-only view, the rest of the CRM stays locked', async () => {
     const U = '/api/v1/admin/crm/settings'
-    // reading: any admin, locked or not
-    for (const who of ['admin', 'superAdmin', 'support']) {
+    // admin / super admin (no custom role) and the developer manage it; HQ_SUPPORT has no settings permission
+    for (const who of ['admin', 'superAdmin', 'dev']) {
       const r = await call('GET', U, { token: tok[who] })
       expect(r.statusCode, who).toBe(200)
-      const d = r.json().data
-      expect(d.canManage, who).toBe(false) // no editing, no verify token
-      expect(d.fields.verifyToken.value, who).toBe('')
-      expect(JSON.stringify(d)).not.toMatch(/access_token_enc|app_secret_enc/)
+      expect(r.json().data.canManage, who).toBe(true)
     }
-    // a developer is the manager
-    expect((await call('GET', U, { token: tok.dev })).json().data.canManage).toBe(true)
-    // signed-out is still a plain 401, never a settings page
+    const ro = await call('GET', U, { token: tok.support })
+    expect(ro.statusCode).toBe(200)
+    expect(ro.json().data.canManage).toBe(false)
+    expect(ro.json().data.fields.verifyToken.value).toBe('') // verify token only for managers
+    expect(JSON.stringify(ro.json().data)).not.toMatch(/access_token_enc|app_secret_enc/)
+    // signed-out is still a plain 401
     expect((await call('GET', U)).statusCode).toBe(401)
-    // everything else on the same prefix stays locked: save, test-send, switch on/off, clear credentials, and the rest of the CRM
-    for (const [m, u] of [['PUT', U], ['POST', `${U}/test`], ['POST', `${U}/enable`], ['DELETE', `${U}/credentials`], ['GET', '/api/v1/admin/crm/conversations'], ['GET', '/api/v1/admin/crm/me']]) {
-      const r = await call(m, u, { token: tok.superAdmin, payload: m === 'GET' || m === 'DELETE' ? undefined : {} })
+    // the four actions are not held back by the lock, but still need the permission: a non-manager is refused for that reason
+    for (const [m, u] of [['PUT', U], ['POST', `${U}/test`], ['POST', `${U}/enable`], ['DELETE', `${U}/credentials`]]) {
+      const r = await call(m, u, { token: tok.support, payload: m === 'DELETE' ? undefined : {} })
       expect(r.statusCode, `${m} ${u}`).toBe(403)
-      expect(r.json().code, `${m} ${u}`).toBe('FEATURE_LOCKED')
+      expect(r.json().code, `${m} ${u}`).toBe('PERMISSION_DENIED')
+    }
+    // everything else in the CRM stays locked, even for a super admin
+    for (const u of ['/api/v1/admin/crm/conversations', '/api/v1/admin/crm/me', '/api/v1/admin/crm/templates']) {
+      const r = await call('GET', u, { token: tok.superAdmin })
+      expect(r.json().code, u).toBe('FEATURE_LOCKED')
     }
   })
 })

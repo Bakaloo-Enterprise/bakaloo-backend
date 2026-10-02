@@ -2,7 +2,6 @@ import { success, error } from '../../../utils/apiResponse.js'
 import { logger } from '../../../config/logger.js'
 import { CrmError } from '../../whatsapp-crm/errors.js'
 import { CRM_PERM, loadCrmAccess } from '../../whatsapp-crm/access.js'
-import { canUseFeature } from '../../features/feature-access.js'
 import { PURPOSES } from '../../whatsapp-crm/template.js'
 import { getWhatsappServices, getWhatsappConfigStatus } from '../../whatsapp-crm/whatsapp.factory.js'
 import { emit as emitAudit } from '../../../utils/audit-log.js'
@@ -60,8 +59,8 @@ export class AdminWhatsappCrmController {
     try {
       const proto = request.headers['x-forwarded-proto'] ?? request.protocol
       const host = request.headers['x-forwarded-host'] ?? request.headers.host
-      // Everyone signed in may READ the connection state; only a manager of an unlocked CRM sees the verify token and gets editing.
-      const canManage = (await loadCrmAccess(request.user.id)).has(CRM_PERM.SETTINGS_MANAGE) && (await canUseFeature(request.user.id, 'whatsapp_crm'))
+      // Everyone signed in may READ the connection state; only someone with crm.settings.manage sees the verify token and gets editing.
+      const canManage = (await loadCrmAccess(request.user.id)).has(CRM_PERM.SETTINGS_MANAGE)
       return success(await settings.view({ origin: host ? `${proto}://${host}` : '', canManage }), 'WhatsApp settings fetched')
     } catch (err) {
       return fail(reply, err)
