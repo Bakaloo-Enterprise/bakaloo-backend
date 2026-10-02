@@ -81,6 +81,20 @@ describe('connection test — "are customer replies really wired up?"', () => {
   })
 })
 
+describe('every problem in a test result has the same full shape (the dashboard relies on it)', () => {
+  it('plain-words problems carry technical + docs + fixes, so no screen has to guess', async () => {
+    const r = await test(config({ appSecret: null, wabaId: null }), fakeHttp(BASE)) // no App Secret, no Business Account ID → two plain problems
+    const withProblem = r.checks.filter((c) => c.problem)
+    expect(withProblem.length).toBeGreaterThanOrEqual(2)
+    for (const c of withProblem) {
+      expect(c.problem.title, c.id).toBeTruthy()
+      expect(Array.isArray(c.problem.fixes), c.id).toBe(true)
+      expect(c.problem.technical, c.id).toEqual(expect.any(Object))
+      expect(c.problem).toHaveProperty('docs')
+    }
+  })
+})
+
 describe('connectReplies — one click tells Meta where to send replies', () => {
   const env = { WHATSAPP_PHONE_NUMBER_ID: '109876543210987', WHATSAPP_WABA_ID: '123456789012345', WHATSAPP_ACCESS_TOKEN: 'EAA' + 'x'.repeat(40), META_APP_SECRET: SECRET, WHATSAPP_VERIFY_TOKEN: 'bk_verify_token', WHATSAPP_API_VERSION: 'v25.0' }
   const make = ({ row = { app_id: '987654321098765' }, e = env, http } = {}) => {

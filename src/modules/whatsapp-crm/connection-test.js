@@ -13,7 +13,11 @@ import { explainMetaError, parseGraphError } from './meta-errors.js'
 
 const DAY = 86_400_000
 
-const step = (id, label, status, summary, extra = {}) => ({ id, label, status, summary, ...extra })
+/** Every check has the same shape; a problem written in plain words (no Meta error behind it) still carries empty technical details. */
+const step = (id, label, status, summary, extra = {}) => ({
+  id, label, status, summary, ...extra,
+  ...(extra.problem ? { problem: { technical: {}, docs: null, ...extra.problem, fixes: extra.problem.fixes ?? [] } } : {}),
+})
 
 function ago(ms) {
   const m = Math.round(ms / 60_000)
