@@ -8,6 +8,7 @@
  * @module modules/admin/reports/controller
  */
 
+import { REPORT_TYPES } from './service.js'
 import { cachedReport } from '../../../utils/report-cache.js'
 import { streamCsvResponse } from '../../../utils/csv-stream.js'
 
@@ -156,5 +157,25 @@ export class AdminReportsController {
     const data = await this.service.getExportData(report, filters)
     const filename = `bakaloo-${report}-${new Date().toISOString().slice(0, 10)}.csv`
     streamCsvResponse(reply, data, filename)
+  }
+
+  /** GET /types — the reports the HQ Reports page offers. */
+  async listTypes() {
+    return { success: true, data: { reports: REPORT_TYPES } }
+  }
+
+  /** GET /generate — run one report on demand (rows as JSON, or a CSV download with format=csv). */
+  async generate(request, reply) {
+    const { report_type: report, startDate, endDate, shop_id: shopId, format } = request.query
+    if (!REPORT_TYPES.some((t) => t.id === report)) {
+      return reply.code(400).send({ success: false, message: 'Unknown report type', code: 'VALIDATION_ERROR' })
+    }
+    const filters = { from: startDate, to: endDate, ...(shopId ? { shop_ids: shopId } : {}) }
+    if (format === 'csv') {
+      const data = await this.service.getExportData(report, filters)
+      return streamCsvResponse(reply, data, `bakaloo-${report}-${new Date().toISOString().slice(0, 10)}.csv`)
+    }
+    const rows = await this.service.getExportData(report, filters, 500)
+    return { success: true, data: { rows } }
   }
 }

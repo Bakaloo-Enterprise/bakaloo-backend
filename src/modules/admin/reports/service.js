@@ -9,6 +9,22 @@
 
 import { stripPiiFromRows } from '../../../utils/pii-strip.js'
 
+/** The reports the HQ Reports page can run (same ids as /export). */
+export const REPORT_TYPES = Object.freeze([
+  { id: 'gmv', name: 'GMV', description: 'Gross merchandise value by day' },
+  { id: 'orders', name: 'Orders', description: 'Order counts and status breakdown' },
+  { id: 'revenue', name: 'Revenue', description: 'Gross, refunded and net revenue by day' },
+  { id: 'refunds', name: 'Refunds', description: 'Refund counts and amounts by day' },
+  { id: 'shop-performance', name: 'Shop Performance', description: 'Per-shop KPIs comparison' },
+  { id: 'top-shops', name: 'Top Shops', description: 'Best performing shops' },
+  { id: 'top-products', name: 'Top Products', description: 'Top selling products' },
+  { id: 'low-stock', name: 'Low Stock', description: 'Products with 10 or fewer units left' },
+  { id: 'rider-performance', name: 'Rider Performance', description: 'Delivery metrics per rider' },
+  { id: 'coupon-usage', name: 'Coupon Usage', description: 'Coupon redemption and discount given' },
+  { id: 'payouts', name: 'Payouts', description: 'Shop payout history' },
+  { id: 'customer-acquisition', name: 'Customer Acquisition', description: 'New customers in the period' },
+])
+
 export class AdminReportsService {
   /**
    * @param {import('./repository.js').AdminReportsRepository} repository
@@ -119,8 +135,8 @@ export class AdminReportsService {
    * @param {object} query
    * @returns {Promise<object[]>}
    */
-  async getExportData(reportType, query) {
-    const exportQuery = { ...query, limit: '10000', page: '1' }
+  async getExportData(reportType, query, limit = 10000) {
+    const exportQuery = { ...query, limit: String(limit), page: '1' }
     const methodMap = {
       'gmv': 'getGmv',
       'orders': 'getOrders',

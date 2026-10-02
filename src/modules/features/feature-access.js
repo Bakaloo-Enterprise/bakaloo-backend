@@ -19,8 +19,17 @@ export const FEATURE_PREFIXES = Object.freeze([
   ['/api/v1/pos', 'store_pos'],
 ])
 
+/**
+ * Endpoints that only tell the caller which screens their own role allows (yes/no flags, no business data).
+ * Several screens (procurement, catalog bulk, business analytics) share one such endpoint, so it must stay open
+ * even while the feature it happens to live under is locked — otherwise releasing e.g. Business Analytics alone
+ * leaves its page showing "Not authorized".
+ */
+const ALWAYS_OPEN = new Set(['/api/v1/admin/procurement/me'])
+
 export function featureForUrl(url) {
   const path = String(url || '').split('?')[0]
+  if (ALWAYS_OPEN.has(path)) return null
   for (const [prefix, key] of FEATURE_PREFIXES) {
     if (path === prefix || path.startsWith(`${prefix}/`)) return key
   }

@@ -204,4 +204,19 @@ describe.skipIf(!enabled)('Feature locks and Developer Super Admin', () => {
     await query(`UPDATE users SET role_id = NULL WHERE id = $1`, [ids.superAdmin])
     await query(`DELETE FROM roles WHERE id = $1`, [role])
   })
+
+  it('releasing ONE feature opens that screen end to end for a normal admin, and leaves the others locked', async () => {
+    const asAdmin = (url) => call('GET', url, { token: tok.admin })
+    await query(`UPDATE feature_flags SET released = (key = 'business_analytics')`)
+    // the permission probe the page uses lives under /procurement, which is still locked: it must still answer
+    const me = await asAdmin('/api/v1/admin/procurement/me')
+    expect(me.statusCode).toBe(200)
+    expect(me.json().data.analyticsBusiness).toBe(true)
+    expect((await asAdmin('/api/v1/admin/business-analytics/overview')).json().code).not.toBe('FEATURE_LOCKED')
+    expect((await asAdmin('/api/v1/admin/procurement/vendors')).json().code).toBe('FEATURE_LOCKED')
+    expect((await asAdmin('/api/v1/admin/catalog-bulk/template')).json().code).toBe('FEATURE_LOCKED')
+    // locking it again closes it straight away
+    await query(`UPDATE feature_flags SET released = false`)
+    expect((await asAdmin('/api/v1/admin/business-analytics/overview')).json().code).toBe('FEATURE_LOCKED')
+  })
 })

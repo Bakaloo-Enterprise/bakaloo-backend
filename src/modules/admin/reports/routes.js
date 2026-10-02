@@ -125,6 +125,35 @@ export default async function adminReportsRoutes(fastify) {
     config: { requiredPermission: 'reports.global_view' },
   }, controller.getCustomerAcquisition.bind(controller))
 
+  // GET /types — report catalogue for the HQ Reports page
+  fastify.get('/types', {
+    schema: { tags: ['Admin Reports'], summary: 'List available reports [reports.global_view]', security: [{ bearerAuth: [] }] },
+    preHandler,
+    config: { requiredPermission: 'reports.global_view' },
+  }, controller.listTypes.bind(controller))
+
+  // GET /generate — run a report on demand (JSON rows, or CSV with format=csv)
+  fastify.get('/generate', {
+    schema: {
+      tags: ['Admin Reports'],
+      summary: 'Generate a report [reports.global_view]',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        required: ['report_type'],
+        properties: {
+          report_type: { type: 'string' },
+          startDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          endDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          shop_id: { type: 'string' },
+          format: { type: 'string', enum: ['json', 'csv'] },
+        },
+      },
+    },
+    preHandler,
+    config: { requiredPermission: 'reports.global_view' },
+  }, controller.generate.bind(controller))
+
   // GET /export — CSV export (max 10000 rows)
   fastify.get('/export', {
     schema: exportSchema,
