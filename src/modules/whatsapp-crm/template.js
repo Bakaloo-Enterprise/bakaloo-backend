@@ -367,6 +367,7 @@ export function canSend(t) {
     DELETED: 'This template was deleted.',
   }
   if (t.status !== 'APPROVED') return { ok: false, reason: why[t.status] ?? 'This template is not approved.' }
+  if (t.name === 'hello_world') return { ok: false, reason: 'Meta’s “hello_world” sample can only be sent from Meta’s test numbers. Use one of your own approved templates.' }
   if (t.meta_category === 'AUTHENTICATION') return { ok: false, reason: 'Authentication templates are not supported yet.' }
   if (t.header_format === 'LOCATION') return { ok: false, reason: 'Templates with a location header are not supported yet.' }
   return { ok: true }
