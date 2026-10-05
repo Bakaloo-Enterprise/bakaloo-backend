@@ -120,6 +120,12 @@ export function explainMetaError(p, ctx = {}) {
   if (p.code === 131026) {
     return out('That number is not on WhatsApp', 'Meta could not deliver because the number does not use WhatsApp.', ['Try a number that has WhatsApp installed.'])
   }
+  if (p.code === 131058) {
+    return out('Meta’s sample template only works on Meta’s test numbers', 'The “hello_world” sample can only be sent from a Public Test Number, not a real business number.', ['Nothing is wrong with your connection. Send a normal message or one of your own approved templates instead.'])
+  }
+  if (p.code === 131047) {
+    return out('That person has not messaged you in the last 24 hours', 'WhatsApp only allows free-form messages to someone who wrote to your number within the last 24 hours. A test text can’t start a conversation.', ['From that phone, send any message to your business number, then press “Send test message” again.', 'To start conversations yourself, use an approved template.'])
+  }
   if (p.code === 132001 || p.code === 132000 || p.code === 132012) {
     return out('The test template could not be used', 'The sample “hello_world” template is missing, not approved, or in a different language on this account.', ['In Message templates, check that “hello_world” (English US) exists and is Approved.', 'You can still send messages using your own approved templates.'])
   }

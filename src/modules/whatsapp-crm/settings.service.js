@@ -120,7 +120,7 @@ export class WhatsappSettingsService {
 
   /**
    * Ask Meta. A passing test connects WhatsApp automatically (and switches it on); a failing one records why.
-   * @param {{ sendTo?: string|null }} opts  a phone number to send the sample "hello_world" message to (optional)
+   * @param {{ sendTo?: string|null }} opts  a phone number to send a short test text to (optional)
    */
   async test({ sendTo = null, origin = '' } = {}, userId) {
     this.#throttle(userId)

@@ -143,7 +143,7 @@ describe('connection test', () => {
 
   describe('optional test message', () => {
     const ROUTES = { 'POST /109876543210987/messages': (body) => ({ messages: [{ id: 'wamid.ABC' }], echo: body }) }
-    it('sends the hello_world template to the number given and reports the message id', async () => {
+    it('sends a test text to the number given and reports the message id', async () => {
       const http = fakeHttp(GOOD(ROUTES))
       const r = await run(cfg(), http, { sendTo: '919999912345' })
       expect(by(r, 'message')).toMatchObject({ status: 'pass', details: { wamid: 'wamid.ABC' } })

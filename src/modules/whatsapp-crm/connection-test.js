@@ -124,7 +124,7 @@ export async function runConnectionTest({ config, http, webhook = { lastReceived
   // 6 ─ optional real message
   if (sendTo) {
     try {
-      const { data } = await http.post(`/${config.phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: sendTo, type: 'template', template: { name: 'hello_world', language: { code: 'en_US' } } })
+      const { data } = await http.post(`/${config.phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: sendTo, type: 'text', text: { body: 'Test message from Bakaloo: your WhatsApp connection is working. ✅' } })
       checks.push(step('message', 'Test message', 'pass', `Meta accepted a test message to ${sendTo}. It should reach WhatsApp in a few seconds.`, { details: { wamid: data?.messages?.[0]?.id ?? null } }))
     } catch (err) {
       const explained = explainMetaError(parseGraphError(err), { step: 'send' })
