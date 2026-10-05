@@ -1,5 +1,6 @@
 import { MetaApiError } from './meta-client.js'
 import { buildSendComponents, canSend, renderPreview } from './template.js'
+import { resolveHeaderImage } from './header-image.js'
 import { classifySendError, consentDecision, resolveTemplateValues } from './campaign.js'
 
 /**
@@ -21,8 +22,8 @@ export class AutomatedSender {
    *           emit: (e: string, p: object) => void,
    *           logger: { warn: Function } }} deps
    */
-  constructor({ repo, tplRepo, client, emit, logger }) {
-    Object.assign(this, { repo, tplRepo, client, emit, logger })
+  constructor({ repo, tplRepo, client, emit, logger, imageRepo = null }) {
+    Object.assign(this, { repo, tplRepo, client, emit, logger, imageRepo })
   }
 
   /**
@@ -35,7 +36,7 @@ export class AutomatedSender {
    *   { outcome: 'RETRY' } |
    *   { outcome: 'FAILED', reason: string, code?: number|null, text?: string, pauseCampaign?: boolean, messageId?: string }>}
    */
-  async send({ contact, template, spec = {}, tokens = {}, headerMediaUrl = null, campaignId, workflowId, attempts = 1, onQueued }) {
+  async send({ contact, template, spec = {}, tokens = {}, headerMediaUrl = null, imageSource = null, cartId = null, campaignId, workflowId, attempts = 1, onQueued }) {
     const gate = canSend(template)
     if (!gate.ok) return { outcome: 'FAILED', reason: 'TEMPLATE_NOT_SENDABLE', text: gate.reason, pauseCampaign: true }
 
@@ -51,7 +52,17 @@ export class AutomatedSender {
     const { values, missing } = resolveTemplateValues(template, spec, tokens)
     if (missing.length) return { outcome: 'SKIPPED', reason: 'MISSING_VALUES', text: `Could not fill: ${missing.join(', ')}` }
 
-    const built = buildSendComponents(template, values, { headerMediaUrl })
+    // A picture typed in by hand wins; otherwise the template's picture source decides, per message.
+    let mediaUrl = headerMediaUrl
+    if (!mediaUrl && imageSource && this.imageRepo) {
+      mediaUrl = await resolveHeaderImage(imageSource, {
+        cartImages: imageSource.mode === 'CART_PRODUCT' && cartId ? await this.imageRepo.cartImages(cartId) : [],
+        productImages: (ids) => this.imageRepo.productImages(ids),
+        offerImages: () => this.imageRepo.offerImages(),
+      })
+      if (!mediaUrl && String(template.header_format ?? '') === 'IMAGE') return { outcome: 'SKIPPED', reason: 'NO_IMAGE', text: 'No picture was available for this message, so it was not sent.' }
+    }
+    const built = buildSendComponents(template, values, { headerMediaUrl: mediaUrl })
     if (built.error) return { outcome: 'FAILED', reason: 'INVALID_TEMPLATE_VALUES', text: built.error }
     if (built.missing.length) return { outcome: 'SKIPPED', reason: 'MISSING_VALUES', text: `Could not fill: ${built.missing.join(', ')}` }
 

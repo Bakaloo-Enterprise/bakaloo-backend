@@ -31,27 +31,45 @@ Checked against Meta's "Template components" documentation (updated Jun 2026). W
 - Spelling or grammar mistakes, or a body that is only variables.
 - Messages that do not match the examples you gave.
 
-## 2. Image / banner in a template
+## 2. Pictures in a template (the simple way to think about it)
 
-You can add a product photo or offer banner at the top of the message.
+**Think of it like a photo frame.** Meta approves the *frame* (the template with an image slot) one time. After that, you can put a *different photo* in the frame for every message. You never need Meta to approve the frame again just because the photo changed.
 
-**How it works (two parts):**
-1. **When you create the template** you upload a *sample* image. Meta reviews the sample to approve the template. In the form choose Header → **Image / banner** → **Upload sample image**. The CRM sends it to Meta for you.
-2. **When you actually send** (inbox Template button, a campaign, or a workflow) you pick the *real* image each time — for example today's offer banner or a product photo. Use the **Upload product image / banner** button, or paste an https link.
+So for Navratri you create **one** template with an image slot. You do not create a new template for each festival picture.
 
-**Image rules (Meta):**
-- JPEG or PNG only, up to **5 MB**.
-- Best shape is landscape about **1.91 : 1** (for example 1200 × 628). Square also works.
-- Do not put important text near the edges. WhatsApp may crop.
-- The image must not break Meta's commerce policy (no alcohol, tobacco, weapons, adult content, misleading claims).
-- Video (MP4, up to 16 MB) and PDF documents (up to 100 MB) are also allowed by Meta. The form currently offers image only.
-- Only one header per template: text OR image, not both.
+### Step A — make the frame (once)
+Templates → New template → Header → **Image / banner** → upload any sample picture → Save and submit to Meta. The sample is only for Meta's review. It is not sent to customers.
 
-**Requirement:** the Meta **App ID** must be saved in WhatsApp settings. Without it the sample upload fails with a message saying so.
+### Step B — choose the real picture (every time you use it)
+In **Workflows**, **Campaigns** and the inbox **Template** button, an image template asks: **"Which picture should we send?"**
 
-**Notes:**
-- A template with an image header cannot be edited after submission in this CRM. Create a new one, or edit it in Meta's WhatsApp Manager.
-- Marketing templates with a banner often get better engagement, but cost the same as other Marketing messages.
+| Choice | What happens | Best for |
+| --- | --- | --- |
+| **The product the customer left in their cart** (cart reminders only) | Each customer gets a picture of their own item. You can choose "most expensive item" or "a random item". | Abandoned-cart reminders |
+| **A product that is on offer today** | The system finds in-stock products with a sale price and picks one at random for each message. Nothing to maintain. | Daily or weekly offer messages |
+| **Products I choose** | You pick products. Each message shows one of them at random. | A themed push, e.g. "festival sweets" |
+| **My own pictures or banners** | Upload 1 picture (everyone gets it) or many (each message gets a random one). | Navratri, Diwali, big sale banners |
+
+**Backup picture:** optional but recommended. If a customer's cart has no photo, or no product is on sale, we send the backup picture instead of skipping that customer. If you choose no backup and nothing is found, the message is skipped (it is never sent without a picture).
+
+### Good to know
+- The picture can be anything. A new Navratri banner, a different product every message — all fine. Meta approved the frame, not the photo.
+- But the photo must still follow WhatsApp's commerce policy (no alcohol, tobacco, weapons, adult content, fake claims). Breaking this can lower your quality rating or get the number restricted. The CRM cannot check the picture itself, so use sensible images.
+- Pictures are sent as JPEG, up to 5 MB, 1200 px wide. Product photos hosted on Cloudinary are converted automatically, so a WebP or huge photo still works.
+- The text part of the message still comes from the approved template. Only the picture changes.
+- Image templates cannot be edited after submitting. Create a new one if you need a different layout.
+- The Meta **App ID** must be saved in WhatsApp settings so the sample can be uploaded to Meta.
+
+### Example: abandoned cart with the customer's product
+1. Template `cart_reminder_picture` (Marketing), image header, body: `Hi {{customer_name}}, you left {{cart_items}} in your Bakaloo cart. Order now and we will deliver it fresh.`, button: Link "Open my cart" → `{{cart_link}}`.
+2. Workflows → New → "Cart left behind" → wait 5 minutes → Send that template.
+3. Under **Which picture should we send?** choose **The product the customer left in their cart** → most expensive item. Add a backup picture (your Bakaloo logo banner).
+4. Switch the workflow on. Every customer now gets their own product's photo.
+
+### Example: Navratri offer to opted-in customers
+1. Template `festival_offer_banner` (Marketing), image header, body with a short offer, button "Shop now".
+2. Campaigns → New → choose the template → audience → **My own pictures or banners** → upload 3 Navratri banners → Launch.
+3. Next week, for Diwali, make a new campaign with the **same template** and Diwali banners. No new Meta approval.
 
 ## 3. Buttons
 
@@ -98,4 +116,5 @@ Buttons make it easy to reply or act. A template can have up to **10 buttons in 
 - Buttons: Link "Shop now" → `https://bakaloo.in` , Quick reply "Stop offers"
 
 ## 6. Current status
-- `welcome_how_can_we_help` (Utility) has been written for submission. Check Templates for its status.
+- `welcome_how_can_we_help` (Utility) text is in `WHATSAPP_TEMPLATES_TO_SUBMIT.md`. Check Templates for its status.
+- Needs deploy: database migration 155 (adds the campaign picture setting), then backend and dashboard.

@@ -1,3 +1,4 @@
+import { validateImageSource } from './header-image.js'
 import { META_CODE } from './meta-client.js'
 import { summarizeComponents } from './template.js'
 
@@ -148,6 +149,11 @@ export function validateCampaignInput(i, { partial = false } = {}) {
     if (!tv || typeof tv !== 'object' || Array.isArray(tv)) errors.templateValues = 'Template values must be an object.'
     else out.templateValues = Object.fromEntries(Object.entries(tv).map(([k, v]) => [k, String(v ?? '').slice(0, 500)]))
   }
+  if (i.headerImageSource !== undefined) {
+    const r = validateImageSource(i.headerImageSource)
+    if (r.error) errors.headerImageSource = r.error
+    else out.headerImageSource = r.value
+  }
   if (i.headerMediaUrl !== undefined) {
     const u = String(i.headerMediaUrl ?? '').trim()
     if (u && !/^https:\/\/\S+$/.test(u)) errors.headerMediaUrl = 'Must be an https:// link.'
@@ -229,12 +235,16 @@ export function validateWorkflowInput(i, { partial = false } = {}) {
         if (!ACTION_TYPES.includes(a?.type)) { errors.actions = 'Unknown action.'; break }
         if (a.type === 'SEND_TEMPLATE' && !UUID.test(String(a.templateId ?? ''))) { errors.actions = 'Choose a template for the message.'; break }
         if (a.type === 'ADD_LABEL' && !UUID.test(String(a.labelId ?? ''))) { errors.actions = 'Choose a label.'; break }
+        if (a.type === 'SEND_TEMPLATE' && a.imageSource != null) {
+          const r = validateImageSource(a.imageSource, { allowCart: trigger === 'CART_ABANDONED' })
+          if (r.error) { errors.actions = r.error; break }
+        }
         if (a.couponId && (trigger !== 'CART_ABANDONED' || !UUID.test(String(a.couponId)))) { errors.actions = 'A coupon can only be attached to a cart reminder.'; break }
       }
       if (!errors.actions) {
         out.actions = acts.map((a) =>
           a.type === 'SEND_TEMPLATE'
-            ? { type: 'SEND_TEMPLATE', templateId: a.templateId, values: Object.fromEntries(Object.entries(a.values ?? {}).map(([k, v]) => [k, String(v ?? '').slice(0, 500)])), ...(a.couponId ? { couponId: a.couponId } : {}) }
+            ? { type: 'SEND_TEMPLATE', templateId: a.templateId, values: Object.fromEntries(Object.entries(a.values ?? {}).map(([k, v]) => [k, String(v ?? '').slice(0, 500)])), ...(a.couponId ? { couponId: a.couponId } : {}), ...(a.imageSource ? { imageSource: validateImageSource(a.imageSource, { allowCart: trigger === 'CART_ABANDONED' }).value } : {}) }
             : { type: 'ADD_LABEL', labelId: a.labelId },
         )
       }

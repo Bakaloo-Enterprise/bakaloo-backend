@@ -118,6 +118,7 @@ export class CampaignService {
     if (!c) throw new CrmError('Campaign not found', 404, 'CAMPAIGN_NOT_FOUND')
     if (c.status !== 'DRAFT') throw new CrmError('This campaign has already been launched.', 409, 'NOT_DRAFT')
     const tpl = await this.assertTemplate(c.template_id, c.template_values)
+    if (tpl.header_format === 'IMAGE' && !c.header_media_url && !c.header_image_source) throw new CrmError('This template has a picture. Choose which picture to send before launching.', 400, 'PICTURE_REQUIRED', { headerImageSource: 'Choose which picture to send' })
 
     let when = null
     if (scheduledAt) {
@@ -238,6 +239,7 @@ export class CampaignService {
         spec: campaign.template_values,
         tokens: { customer_name: friendlyName(contact.customer_name, contact.profile_name) },
         headerMediaUrl: campaign.header_media_url,
+        imageSource: campaign.header_image_source ?? null,
         campaignId: campaign.id,
         attempts: recipient.attempts,
         onQueued: (messageId) => this.repo.setRecipient(recipient.id, { status: 'SENDING', messageId }),

@@ -248,6 +248,7 @@ const campaignProps = {
   templateId: uuid,
   templateValues: stringMap('^[a-z0-9_.]+$', 500),
   headerMediaUrl: { type: 'string', maxLength: 2000 },
+  headerImageSource: { type: ['object', 'null'], additionalProperties: true },
   ratePerMinute: { type: 'integer', minimum: 1, maximum: 600 },
   audience: {
     type: 'object',
@@ -335,6 +336,7 @@ const workflowProps = {
         templateId: uuid,
         labelId: uuid,
         couponId: uuid,
+        imageSource: { type: ['object', 'null'], additionalProperties: true },
         values: stringMap('^[a-z0-9_.]+$', 500),
       },
     },

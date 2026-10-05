@@ -100,6 +100,7 @@ export class WorkflowService {
         const gate = canSend(tpl)
         if (!gate.ok) throw new CrmError(`Cannot switch on: ${gate.reason}`, 409, 'TEMPLATE_NOT_SENDABLE')
       }
+      if (forActivation && tpl.header_format === 'IMAGE' && !a.imageSource) throw new CrmError('This template has a picture. Choose which picture to send.', 400, 'PICTURE_REQUIRED', { actions: 'Choose which picture to send' })
       const missing = unfillableKeys(tpl, a.values, a.couponId ? tokenNames : tokenNames.filter((t) => t !== 'coupon_code'))
       if (missing.length) throw new CrmError(`Fill in a value for: ${missing.join(', ')}`, 400, 'MISSING_VALUES', { actions: `Fill in a value for: ${missing.join(', ')}` })
       const usesLink = JSON.stringify(a.values ?? {}).includes('cart_link') || this.usesToken(tpl, a, 'cart_link') || this.usesToken(tpl, a, 'cart_ref')
@@ -204,7 +205,7 @@ export class WorkflowService {
       couponId = coupon.id
     }
 
-    const out = await this.sender.send({ contact, template: tpl, spec: action.values, tokens: withCoupon, workflowId: wf.id })
+    const out = await this.sender.send({ contact, template: tpl, spec: action.values, tokens: withCoupon, workflowId: wf.id, imageSource: action.imageSource ?? null, cartId: kind === 'cart' ? ctx.id : null })
     switch (out.outcome) {
       case 'SENT':
         if (kind === 'cart') await this.repo.linkCartMessage({ cartId: ctx.id, messageId: out.message.id, runId: run.id, couponId })

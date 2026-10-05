@@ -26,6 +26,7 @@ import { AnalyticsRepository } from './analytics.repository.js'
 import { AnalyticsService } from './analytics.service.js'
 import { WorkflowRepository } from './workflow.repository.js'
 import { WorkflowService } from './workflow.service.js'
+import { HeaderImageRepository } from './header-image.repository.js'
 import { StoreStatusService } from '../store-status/store-status.service.js'
 
 /**
@@ -67,7 +68,7 @@ export function getWhatsappServices() {
     emit: emitCrmEvent,
     logger,
   })
-  const sender = new AutomatedSender({ repo, tplRepo, client, emit: emitCrmEvent, logger })
+  const sender = new AutomatedSender({ repo, tplRepo, client, emit: emitCrmEvent, logger, imageRepo: new HeaderImageRepository() })
   cached = {
     repo,
     settings,

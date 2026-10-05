@@ -1,6 +1,6 @@
 import { query } from '../../config/database.js'
 
-const CAMPAIGN_COLS = `c.id, c.name, c.template_id, c.template_values, c.header_media_url, c.audience, c.status, c.pause_reason,
+const CAMPAIGN_COLS = `c.id, c.name, c.template_id, c.template_values, c.header_media_url, c.header_image_source, c.audience, c.status, c.pause_reason,
   c.scheduled_at, c.started_at, c.completed_at, c.rate_per_minute, c.total_recipients, c.created_by, c.created_at, c.updated_at`
 
 /** Campaigns, their recipients, audiences, consent and the do-not-contact list (Phase 7). */
@@ -28,9 +28,9 @@ export class CampaignRepository {
 
   async insert(v, userId) {
     const { rows } = await query(
-      `INSERT INTO wa_campaigns (name, template_id, template_values, header_media_url, audience, rate_per_minute, created_by)
-       VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,COALESCE($6,60),$7) RETURNING id`,
-      [v.name, v.templateId, JSON.stringify(v.templateValues ?? {}), v.headerMediaUrl ?? null, JSON.stringify(v.audience), v.ratePerMinute ?? null, userId],
+      `INSERT INTO wa_campaigns (name, template_id, template_values, header_media_url, header_image_source, audience, rate_per_minute, created_by)
+       VALUES ($1,$2,$3::jsonb,$4,$8::jsonb,$5::jsonb,COALESCE($6,60),$7) RETURNING id`,
+      [v.name, v.templateId, JSON.stringify(v.templateValues ?? {}), v.headerMediaUrl ?? null, JSON.stringify(v.audience), v.ratePerMinute ?? null, userId, v.headerImageSource ? JSON.stringify(v.headerImageSource) : null],
     )
     return this.get(rows[0].id)
   }
@@ -42,10 +42,12 @@ export class CampaignRepository {
          name = COALESCE($2, name), template_id = COALESCE($3, template_id),
          template_values = COALESCE($4::jsonb, template_values),
          header_media_url = CASE WHEN $5::boolean THEN $6 ELSE header_media_url END,
+         header_image_source = CASE WHEN $9::boolean THEN $10::jsonb ELSE header_image_source END,
          audience = COALESCE($7::jsonb, audience), rate_per_minute = COALESCE($8, rate_per_minute), updated_at = NOW()
        WHERE id = $1 AND status = 'DRAFT' RETURNING id`,
       [id, v.name ?? null, v.templateId ?? null, v.templateValues ? JSON.stringify(v.templateValues) : null,
-        v.headerMediaUrl !== undefined, v.headerMediaUrl ?? null, v.audience ? JSON.stringify(v.audience) : null, v.ratePerMinute ?? null],
+        v.headerMediaUrl !== undefined, v.headerMediaUrl ?? null, v.audience ? JSON.stringify(v.audience) : null, v.ratePerMinute ?? null,
+        v.headerImageSource !== undefined, v.headerImageSource ? JSON.stringify(v.headerImageSource) : null],
     )
     return rows[0] ? this.get(id) : null
   }
