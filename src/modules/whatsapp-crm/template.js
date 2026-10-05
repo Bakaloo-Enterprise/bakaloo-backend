@@ -112,8 +112,15 @@ export function validateTemplateInput(i) {
     if (bodyVars.length && words < bodyVars.length * 3) warnings.push('This message has many variables for its length. Meta may reject it. Add more fixed text.')
   }
 
-  // ── header (text only) ─────────────────────────────────────────────
-  const headerText = i.headerText ? String(i.headerText).trim() : ''
+  // ── header: text, or an image/video/document sample uploaded to Meta ──
+  const mediaFormat = i.headerFormat ? String(i.headerFormat).toUpperCase() : ''
+  const mediaHandle = i.headerHandle ? String(i.headerHandle).trim() : ''
+  if (mediaFormat) {
+    if (!['IMAGE', 'VIDEO', 'DOCUMENT'].includes(mediaFormat)) err('headerFormat', 'Choose image, video or document')
+    else if (i.headerText && String(i.headerText).trim()) err('headerText', 'A template has either a text header or a media header, not both')
+    else if (!mediaHandle) err('headerFormat', `Upload a sample ${mediaFormat.toLowerCase()} so Meta can review the template`)
+  }
+  const headerText = !mediaFormat && i.headerText ? String(i.headerText).trim() : ''
   let headerVars = []
   if (headerText) {
     if (headerText.length > LIMITS.header) err('headerText', `The header is too long (${headerText.length}/${LIMITS.header})`)
@@ -199,6 +206,7 @@ export function validateTemplateInput(i) {
       ...(headerVars.length ? { example: { header_text_named_params: [{ param_name: headerVars[0].name, example: exOf(headerVars[0].name) }] } } : {}),
     })
   }
+  if (mediaFormat) components.push({ type: 'HEADER', format: mediaFormat, example: { header_handle: [mediaHandle] } })
   components.push({
     type: 'BODY',
     text: bodyText,
@@ -234,7 +242,7 @@ export function validateTemplateInput(i) {
       allowCategoryChange: i.allowCategoryChange !== false,
       components,
       bodyText,
-      headerFormat: headerText ? 'TEXT' : null,
+      headerFormat: mediaFormat || (headerText ? 'TEXT' : null),
       variables,
     },
   }

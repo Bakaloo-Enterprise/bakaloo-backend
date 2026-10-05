@@ -99,7 +99,7 @@ export function resolveConfig(row, secrets, env) {
 
 /** A stable fingerprint of what the Meta client depends on (so it is rebuilt only when something changed). */
 export function clientKey(c) {
-  return [c.accessToken, c.phoneNumberId, c.wabaId, c.apiVersion, c.baseUrl].join('|')
+  return [c.accessToken, c.phoneNumberId, c.wabaId, c.appId, c.apiVersion, c.baseUrl].join('|')
 }
 
 export function assertSettingsErrors(errors) {

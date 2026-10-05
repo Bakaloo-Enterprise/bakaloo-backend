@@ -208,6 +208,43 @@ export class TemplateService {
     return { deleted: true, remote: true, nameReservedDays: row.status === 'APPROVED' ? 30 : 0 }
   }
 
+  // ─── Media header sample ──────────────────────────────────────────
+  /**
+   * Fetch an already-uploaded sample (Cloudinary https link) and hand it to Meta's Resumable Upload API.
+   * Meta limits: images JPEG/PNG ≤ 5 MB, videos MP4 ≤ 16 MB, documents PDF ≤ 100 MB.
+   */
+  async uploadHeaderSample({ url, format }) {
+    const kind = String(format ?? 'IMAGE').toUpperCase()
+    const RULES = { IMAGE: { types: ['image/jpeg', 'image/png'], max: 5 * 1024 * 1024, label: 'a JPEG or PNG image up to 5 MB' }, VIDEO: { types: ['video/mp4'], max: 16 * 1024 * 1024, label: 'an MP4 video up to 16 MB' }, DOCUMENT: { types: ['application/pdf'], max: 100 * 1024 * 1024, label: 'a PDF up to 100 MB' } }
+    const rule = RULES[kind]
+    if (!rule) throw new CrmError('Choose image, video or document', 400, 'INVALID_HEADER')
+    let host
+    try {
+      host = new URL(url)
+    } catch {
+      throw new CrmError('That link is not valid', 400, 'INVALID_HEADER')
+    }
+    if (host.protocol !== 'https:' || host.hostname !== 'res.cloudinary.com') throw new CrmError('Upload the file with the upload button first', 400, 'INVALID_HEADER')
+    let res
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(20000) })
+    } catch {
+      throw new CrmError('Could not read the uploaded file. Try uploading it again.', 502, 'FETCH_FAILED')
+    }
+    if (!res.ok) throw new CrmError('Could not read the uploaded file. Try uploading it again.', 502, 'FETCH_FAILED')
+    const mimeType = String(res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+    if (!rule.types.includes(mimeType)) throw new CrmError(`WhatsApp needs ${rule.label}. This file is ${mimeType || 'an unknown type'}.`, 400, 'INVALID_HEADER')
+    const buffer = Buffer.from(await res.arrayBuffer())
+    if (buffer.length > rule.max) throw new CrmError(`The file is too big. WhatsApp allows ${rule.label}.`, 400, 'INVALID_HEADER')
+    try {
+      const ext = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1]
+      const { handle } = await this.client.uploadTemplateSample({ buffer, mimeType, fileName: `header.${ext}` })
+      return { handle, format: kind }
+    } catch (err) {
+      throw mapMetaError(err)
+    }
+  }
+
   // ─── Sync with Meta ───────────────────────────────────────────────
   /** Pull every template from Meta and reconcile. One at a time (advisory lock). */
   async sync() {

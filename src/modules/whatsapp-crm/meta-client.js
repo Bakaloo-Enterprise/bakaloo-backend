@@ -55,7 +55,7 @@ export class MetaApiError extends Error {
  *           http?: import('axios').AxiosInstance, timeoutMs?: number }} cfg
  */
 export function createMetaClient(cfg) {
-  const { accessToken, phoneNumberId, wabaId, apiVersion = 'v25.0', timeoutMs = 15000, baseUrl = 'https://graph.facebook.com' } = cfg
+  const { accessToken, phoneNumberId, wabaId, appId, apiVersion = 'v25.0', timeoutMs = 15000, baseUrl = 'https://graph.facebook.com' } = cfg
   const http =
     cfg.http ??
     axios.create({
@@ -146,6 +146,25 @@ export function createMetaClient(cfg) {
       })
       if (!d?.id) throw new MetaApiError('Meta accepted the template but returned no template id')
       return { id: String(d.id), status: String(d.status ?? 'PENDING').toUpperCase(), category: d.category ? String(d.category).toUpperCase() : null }
+    },
+
+    /**
+     * Resumable Upload API: turns a sample image/video/PDF into the `header_handle` a media-header template needs.
+     * Needs the Meta App ID. https://developers.facebook.com/docs/graph-api/guides/upload
+     */
+    async uploadTemplateSample({ buffer, mimeType, fileName = 'sample' }) {
+      if (!accessToken || !appId) {
+        throw new MetaApiError('Add the Meta App ID in WhatsApp settings first. It is needed to upload the sample image Meta reviews.', { retryable: false })
+      }
+      const session = await call('post', `/${appId}/uploads`, { params: { file_length: buffer.length, file_type: mimeType, file_name: fileName } })
+      if (!session?.id) throw new MetaApiError('Meta did not start the upload')
+      try {
+        const res = await http.post(`/${session.id}`, buffer, { headers: { Authorization: `OAuth ${accessToken}`, file_offset: '0', 'Content-Type': 'application/octet-stream' }, maxBodyLength: Infinity })
+        if (!res.data?.h) throw new MetaApiError('Meta did not return a file handle')
+        return { handle: String(res.data.h) }
+      } catch (err) {
+        throw toMetaError(err)
+      }
     },
 
     /** Replaces ALL components of an existing template; Meta re-reviews it. */

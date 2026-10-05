@@ -193,6 +193,8 @@ const templateProps = {
   metaCategory: { type: 'string', enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'] },
   purpose: { type: 'string', maxLength: 30 },
   headerText: { type: 'string', maxLength: 200 },
+  headerFormat: { type: 'string', enum: ['IMAGE', 'VIDEO', 'DOCUMENT'] },
+  headerHandle: { type: 'string', maxLength: 600 },
   bodyText: { type: 'string', maxLength: 3000 },
   footerText: { type: 'string', maxLength: 200 },
   allowCategoryChange: { type: 'boolean' },
@@ -225,6 +227,7 @@ export const listTemplatesSchema = {
 }
 export const createTemplateSchema = { body: { type: 'object', required: ['name'], properties: templateProps } }
 export const updateTemplateSchema = { params: idParams, body: { type: 'object', properties: templateProps } }
+export const headerSampleSchema = { body: { type: 'object', required: ['url'], properties: { url: { type: 'string', maxLength: 2000 }, format: { type: 'string', enum: ['IMAGE', 'VIDEO', 'DOCUMENT'] } } } }
 export const templateIdSchema = { params: idParams }
 export const sendTemplateSchema = {
   params: idParams,

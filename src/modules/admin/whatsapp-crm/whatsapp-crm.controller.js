@@ -425,6 +425,15 @@ export class AdminWhatsappCrmController {
     }
   }
 
+  async uploadHeaderSample(request, reply) {
+    const { templates } = getWhatsappServices()
+    try {
+      return success(await templates.uploadHeaderSample(request.body), 'Sample uploaded to Meta')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
   async updateTemplate(request, reply) {
     const { templates } = getWhatsappServices()
     try {

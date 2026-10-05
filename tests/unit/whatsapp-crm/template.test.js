@@ -341,3 +341,17 @@ describe('interpretTemplateWebhook', () => {
     expect(done.patch).toEqual({ meta_category: 'MARKETING', pending_category: null, pending_category_at: null })
   })
 })
+
+describe('validateTemplateInput — media header', () => {
+  it('builds an IMAGE header from the uploaded sample handle', () => {
+    const r = validateTemplateInput(base({ headerFormat: 'IMAGE', headerHandle: '4::abc' }))
+    expect(r.ok).toBe(true)
+    expect(r.value.headerFormat).toBe('IMAGE')
+    expect(r.value.components[0]).toEqual({ type: 'HEADER', format: 'IMAGE', example: { header_handle: ['4::abc'] } })
+  })
+  it('needs the sample, and cannot be combined with a text header', () => {
+    expect(fields(base({ headerFormat: 'IMAGE' }))).toContain('headerFormat')
+    expect(fields(base({ headerFormat: 'IMAGE', headerHandle: '4::abc', headerText: 'Hello' }))).toContain('headerText')
+    expect(fields(base({ headerFormat: 'GIF', headerHandle: '4::abc' }))).toContain('headerFormat')
+  })
+})

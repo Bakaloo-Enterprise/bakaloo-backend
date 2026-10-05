@@ -13,7 +13,7 @@ export function createLazyMetaClient(getConfig, make = (c) => createMetaClient(c
     const cfg = await getConfig()
     const key = clientKey(cfg)
     if (!current || current.key !== key) {
-      current = { key, client: make({ accessToken: cfg.accessToken, phoneNumberId: cfg.phoneNumberId, wabaId: cfg.wabaId, apiVersion: cfg.apiVersion, baseUrl: cfg.baseUrl }) }
+      current = { key, client: make({ accessToken: cfg.accessToken, phoneNumberId: cfg.phoneNumberId, wabaId: cfg.wabaId, appId: cfg.appId, apiVersion: cfg.apiVersion, baseUrl: cfg.baseUrl }) }
     }
     return current.client
   }

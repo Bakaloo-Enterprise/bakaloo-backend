@@ -78,6 +78,7 @@ export default async function adminWhatsappCrmRoutes(fastify) {
 
   route('get', '/templates', TEMPLATES_VIEW, S.listTemplatesSchema, ctrl.listTemplates)
   route('post', '/templates', TEMPLATES_MANAGE, S.createTemplateSchema, ctrl.createTemplate)
+  route('post', '/templates/header-sample', TEMPLATES_MANAGE, S.headerSampleSchema, ctrl.uploadHeaderSample)
   route('post', '/templates/sync', TEMPLATES_MANAGE, undefined, ctrl.syncTemplates)
   route('get', '/templates/:id', TEMPLATES_VIEW, S.templateIdSchema, ctrl.getTemplate)
   route('patch', '/templates/:id', TEMPLATES_MANAGE, S.updateTemplateSchema, ctrl.updateTemplate)
