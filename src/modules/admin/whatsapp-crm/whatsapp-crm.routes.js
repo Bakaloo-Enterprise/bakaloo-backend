@@ -53,6 +53,9 @@ export default async function adminWhatsappCrmRoutes(fastify) {
   route('get', '/conversations/:id', INBOX_VIEW, S.conversationIdSchema, ctrl.getConversation)
   route('get', '/conversations/:id/messages', INBOX_VIEW, S.listMessagesSchema, ctrl.listMessages)
   route('post', '/conversations/:id/messages', INBOX_REPLY, S.sendMessageSchema, ctrl.sendMessage)
+  // Attachments: send (multipart: file + optional caption) and view/download (streamed through our API so Meta's token never reaches the browser).
+  route('post', '/conversations/:id/media', INBOX_REPLY, S.conversationIdSchema, ctrl.sendMedia)
+  route('get', '/conversations/:id/messages/:messageId/media', INBOX_VIEW, S.messageMediaSchema, ctrl.getMedia)
   route('post', '/conversations/:id/read', INBOX_VIEW, S.conversationIdSchema, ctrl.markRead)
   // Finer rule inside: an agent may claim an UNASSIGNED chat for themselves; moving it elsewhere needs ASSIGN.
   route('post', '/conversations/:id/assign', INBOX_VIEW, S.assignSchema, ctrl.assign)

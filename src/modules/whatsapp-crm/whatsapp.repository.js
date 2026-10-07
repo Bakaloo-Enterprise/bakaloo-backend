@@ -229,10 +229,10 @@ export class WhatsappRepository {
     const run = client ? client.query.bind(client) : query
     const { rows } = await run(
       `INSERT INTO wa_messages
-         (conversation_id, contact_id, direction, msg_type, body, template_name, template_language, reply_to_wamid, status, sent_by, is_bot, bot_rule_id, template_id, campaign_id, workflow_id)
-       VALUES ($1,$2,'OUTBOUND',$3,$4,$5,$6,$7,'QUEUED',$8,$9,$10,$11,$12,$13)
+         (conversation_id, contact_id, direction, msg_type, body, template_name, template_language, reply_to_wamid, status, sent_by, is_bot, bot_rule_id, template_id, campaign_id, workflow_id, media)
+       VALUES ($1,$2,'OUTBOUND',$3,$4,$5,$6,$7,'QUEUED',$8,$9,$10,$11,$12,$13,$14::jsonb)
        RETURNING *`,
-      [m.conversationId, m.contactId, m.type, m.body, m.templateName ?? null, m.templateLanguage ?? null, m.replyToWamid ?? null, m.sentBy ?? null, m.isBot ?? false, m.botRuleId ?? null, m.templateId ?? null, m.campaignId ?? null, m.workflowId ?? null],
+      [m.conversationId, m.contactId, m.type, m.body, m.templateName ?? null, m.templateLanguage ?? null, m.replyToWamid ?? null, m.sentBy ?? null, m.isBot ?? false, m.botRuleId ?? null, m.templateId ?? null, m.campaignId ?? null, m.workflowId ?? null, m.media ? JSON.stringify(m.media) : null],
     )
     return rows[0]
   }
@@ -247,6 +247,20 @@ export class WhatsappRepository {
       [id, wamid],
     )
     return rows[0]
+  }
+
+  /** Records the Meta media id of an outbound attachment once it is uploaded. */
+  async setMessageMedia(id, media) {
+    await query(`UPDATE wa_messages SET media = $2::jsonb WHERE id = $1`, [id, JSON.stringify(media)])
+  }
+
+  /** The attachment of one message of this conversation (null when the message has none). */
+  async getMessageMedia(conversationId, messageId) {
+    const { rows } = await query(
+      `SELECT msg_type, media FROM wa_messages WHERE id = $1 AND conversation_id = $2`,
+      [messageId, conversationId],
+    )
+    return rows[0] ?? null
   }
 
   async markOutboundFailed(id, err) {

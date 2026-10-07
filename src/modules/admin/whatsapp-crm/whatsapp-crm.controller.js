@@ -184,6 +184,57 @@ export class AdminWhatsappCrmController {
     }
   }
 
+  /** multipart: one "file" plus an optional "caption" text field. */
+  async sendMedia(request, reply) {
+    const { send, crm } = getWhatsappServices()
+    try {
+      await crm.getAccessibleConversation(request.params.id, request.crm)
+      const file = await request.file({ limits: { fileSize: 26 * 1024 * 1024 } })
+      if (!file) return reply.code(400).send(error('Choose a file to send', 'BAD_REQUEST'))
+      const buffer = await file.toBuffer()
+      if (file.file.truncated) return reply.code(400).send(error('That file is too large to send on WhatsApp.', 'FILE_TOO_LARGE'))
+      const message = await send.sendMedia({
+        conversationId: request.params.id,
+        buffer,
+        mimeType: file.mimetype,
+        filename: file.filename,
+        caption: file.fields?.caption?.value,
+        sentBy: request.user.id,
+      })
+      return success(message, 'File sent')
+    } catch (err) {
+      if (err?.code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(400).send(error('That file is too large to send on WhatsApp.', 'FILE_TOO_LARGE'))
+      return fail(reply, err)
+    }
+  }
+
+  /** Streams an attachment (customer's or ours) from Meta. */
+  async getMedia(request, reply) {
+    const { repo, crm, client } = getWhatsappServices()
+    try {
+      const conv = await crm.getAccessibleConversation(request.params.id, request.crm)
+      const row = await repo.getMessageMedia(conv.id, request.params.messageId)
+      const mediaId = row?.media?.id
+      if (!mediaId) throw new CrmError('This message has no file', 404, 'MEDIA_NOT_FOUND')
+      let file
+      try {
+        file = await client.downloadMedia(mediaId)
+      } catch (err) {
+        logger.warn({ code: err?.code, msg: err?.message, conversationId: conv.id }, 'WhatsApp media download failed')
+        throw new CrmError('This file is no longer available from WhatsApp (they keep files for about 30 days).', 410, 'MEDIA_EXPIRED')
+      }
+      const name = String(row.media.filename ?? '').replace(/[^\w.\- ]+/g, '_')
+      return reply
+        .header('Content-Type', file.mimeType)
+        .header('Cache-Control', 'private, max-age=86400')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Content-Disposition', `${row.msg_type === 'document' ? 'attachment' : 'inline'}${name ? `; filename="${name}"` : ''}`)
+        .send(file.buffer)
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
   /** Clears the unread badge and (best effort) shows blue ticks to the customer. */
   async markRead(request, reply) {
     const { repo, client, crm } = getWhatsappServices()

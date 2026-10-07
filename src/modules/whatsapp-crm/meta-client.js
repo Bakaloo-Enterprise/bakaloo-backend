@@ -126,6 +126,60 @@ export function createMetaClient(cfg) {
       })
     },
 
+    /**
+     * Uploads a file to Meta and returns its media id (valid ~30 days). Limits are Meta's:
+     * images 5 MB, audio/video 16 MB, documents 100 MB.
+     */
+    async uploadMedia({ buffer, mimeType, filename }) {
+      assertConfigured()
+      const form = new FormData()
+      form.append('messaging_product', 'whatsapp')
+      form.append('type', mimeType)
+      form.append('file', new Blob([buffer], { type: mimeType }), filename || 'file')
+      try {
+        const res = await http.post(`/${phoneNumberId}/media`, form, {
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': undefined },
+          maxBodyLength: Infinity,
+          timeout: 60000,
+        })
+        if (!res.data?.id) throw new MetaApiError('Meta accepted the file but returned no media id')
+        return { mediaId: String(res.data.id) }
+      } catch (err) {
+        throw toMetaError(err)
+      }
+    },
+
+    /** Sends an already uploaded image / video / audio / document. Inside the 24-hour window only. */
+    async sendMedia({ to, bsuid, mediaType, mediaId, caption, filename, replyToWamid }) {
+      const body = { id: mediaId }
+      if (caption && (mediaType === 'image' || mediaType === 'video' || mediaType === 'document')) body.caption = caption
+      if (filename && mediaType === 'document') body.filename = filename
+      return send({
+        ...addressee({ to, bsuid }),
+        type: mediaType,
+        [mediaType]: body,
+        ...(replyToWamid ? { context: { message_id: replyToWamid } } : {}),
+      })
+    },
+
+    /** Downloads a customer's (or our own) attachment by media id. Meta's download URL needs the access token too. */
+    async downloadMedia(mediaId) {
+      assertConfigured()
+      try {
+        const info = await call('get', `/${mediaId}`)
+        if (!info?.url) throw new MetaApiError('Meta has no download link for this file (it may have expired)')
+        const res = await axios.get(info.url, {
+          responseType: 'arraybuffer',
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 60000,
+          maxContentLength: 110 * 1024 * 1024,
+        })
+        return { buffer: Buffer.from(res.data), mimeType: info.mime_type || res.headers['content-type'] || 'application/octet-stream' }
+      } catch (err) {
+        throw toMetaError(err)
+      }
+    },
+
     /** Approved template. Required outside the 24-hour window. */
     async sendTemplate({ to, bsuid, name, language, components }) {
       return send({

@@ -405,3 +405,11 @@ export const saveSettingsSchema = {
 }
 export const testSettingsSchema = { body: { type: 'object', properties: { sendTo: { type: 'string', maxLength: 20 } } } }
 export const enableSettingsSchema = { body: { type: 'object', required: ['enabled'], properties: { enabled: { type: 'boolean' } } } }
+
+export const messageMediaSchema = {
+  params: {
+    type: 'object',
+    required: ['id', 'messageId'],
+    properties: { id: uuid, messageId: uuid },
+  },
+}

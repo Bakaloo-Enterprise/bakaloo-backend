@@ -38,6 +38,10 @@ export class InboundService {
     const phoneNumberId = typeof this.phoneNumberId === 'function' ? await this.phoneNumberId() : this.phoneNumberId
     const parsed = parseWebhook(event.payload, { phoneNumberId })
 
+    if (parsed.messages.length === 0 && parsed.skipped > 0 && parsed.statuses.length === 0) {
+      // Usually: the webhook is for a different WhatsApp number than the one saved in settings.
+      this.logger.warn({ eventId, skipped: parsed.skipped, configuredPhoneNumberId: phoneNumberId }, 'WhatsApp webhook event ignored (other number or unsupported)')
+    }
     for (const msg of parsed.messages) await this.handleMessage(msg)
 
     let unmatched = 0
@@ -110,8 +114,7 @@ export class InboundService {
     })
 
     if (!result) return
-    // Place a brand-new contact on the board immediately (reconcile would do it within a minute).
-    if (result.created || !result.contact.stage_id) await this.pipeline?.evaluateContact(result.contact.id)
+    // Tell the dashboards first: a hiccup in the pipeline step below must never hide a new chat.
     // Content-free on purpose: agents may only see their own chats, so the socket tells
     // clients "something changed here" and each one refetches via the permission-checked API.
     this.emit('crm:message', {
@@ -120,6 +123,14 @@ export class InboundService {
       assignedTo: result.conversation.assigned_to ?? null,
       newContact: result.created,
     })
+    // Place a brand-new contact on the board immediately (reconcile would do it within a minute).
+    if (result.created || !result.contact.stage_id) {
+      try {
+        await this.pipeline?.evaluateContact(result.contact.id)
+      } catch (err) {
+        this.logger.warn({ err: err?.message, contactId: result.contact.id }, 'Could not place the new WhatsApp contact on the pipeline board yet')
+      }
+    }
     // The bot answers last, after the message is safely stored and agents have been notified.
     // It never throws; on any doubt it hands the chat to a person.
     await this.bot?.handleInbound({
