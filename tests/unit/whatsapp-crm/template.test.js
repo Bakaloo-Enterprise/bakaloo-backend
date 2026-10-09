@@ -355,3 +355,20 @@ describe('validateTemplateInput — media header', () => {
     expect(fields(base({ headerFormat: 'GIF', headerHandle: '4::abc' }))).toContain('headerFormat')
   })
 })
+
+describe('buildSendComponents — Flow buttons', () => {
+  it('declares a Flow button at its index even though it has no variables', () => {
+    const tpl = {
+      parameter_format: 'POSITIONAL',
+      components: [
+        { type: 'BODY', text: 'Pick your area' },
+        { type: 'BUTTONS', buttons: [
+          { type: 'FLOW', text: 'Choose area', flow_id: 1, flow_action: 'NAVIGATE', navigate_screen: 'ONE' },
+          { type: 'URL', text: 'Android', url: 'https://example.com/app' },
+        ] },
+      ],
+    }
+    const r = buildSendComponents(tpl, {})
+    expect(r.components).toEqual([{ type: 'button', sub_type: 'flow', index: '0', parameters: [{ type: 'action', action: { flow_token: 'unused' } }] }])
+  })
+})

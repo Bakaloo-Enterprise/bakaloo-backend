@@ -424,6 +424,11 @@ export function buildSendComponents(template, values, opts = {}) {
 
   const buttons = comps.find((c) => c.type === 'BUTTONS')?.buttons ?? []
   buttons.forEach((b, idx) => {
+    // A Flow button (e.g. the location survey) must be declared at send time even though it has no variables.
+    if (b.type === 'FLOW') {
+      out.push({ type: 'button', sub_type: 'flow', index: String(idx), parameters: [{ type: 'action', action: { flow_token: 'unused' } }] })
+      return
+    }
     if (b.type !== 'URL') return
     const uv = summary.variables.filter((v) => v.where === `button${idx}`)
     if (!uv.length) return
