@@ -136,7 +136,7 @@ export class InboundService {
     // It never throws; on any doubt it hands the chat to a person.
     await this.bot?.handleInbound({
       conversationId: result.conversation.id,
-      message: { wamid: msg.wamid, type: msg.type, body: msg.body, timestamp: msg.timestamp },
+      message: { wamid: msg.wamid, type: msg.type, body: msg.body, timestamp: msg.timestamp, interactiveType: msg.interactive?.type ?? null },
     })
   }
 

@@ -102,6 +102,25 @@ function parseMessage(raw, contactsByKey, phoneNumberId) {
   }
 }
 
+/**
+ * A customer's answer to a WhatsApp Flow (e.g. "Choose your Location Area"). Meta sends the answers as a JSON
+ * string whose keys are screen/field ids; values look like "0_Other ?". Keep the raw answers and a readable line.
+ */
+export function flowReplyContent(nfm) {
+  let response = {}
+  try {
+    response = typeof nfm.response_json === 'string' ? JSON.parse(nfm.response_json) : nfm.response_json ?? {}
+  } catch {
+    response = {}
+  }
+  const answers = Object.entries(response)
+    .filter(([k]) => k !== 'flow_token')
+    .map(([, v]) => (Array.isArray(v) ? v.join(', ') : String(v ?? '')).replace(/^\d+_/, '').trim())
+    .filter(Boolean)
+  const body = answers.length ? `Form answer: ${answers.join(' · ')}` : 'Submitted a form'
+  return { body, media: null, interactive: { type: 'nfm_reply', name: nfm.name ?? 'flow', body: nfm.body ?? null, response } }
+}
+
 function extractContent(raw) {
   const none = { body: null, media: null, interactive: null }
   switch (raw.type) {
@@ -135,6 +154,7 @@ function extractContent(raw) {
     }
     case 'interactive': {
       const i = raw.interactive ?? {}
+      if (i.type === 'nfm_reply' && i.nfm_reply) return flowReplyContent(i.nfm_reply)
       const reply = i.button_reply ?? i.list_reply ?? null
       return { ...none, body: reply?.title ?? null, interactive: reply ? { type: i.type, ...reply } : null }
     }

@@ -77,7 +77,7 @@ export class BotService {
       return { outcome: 'SKIPPED_STALE' }
     }
 
-    if (msg.type === 'sticker') return { outcome: 'IGNORED' }
+    if (msg.type === 'sticker' || msg.interactiveType === 'nfm_reply') return { outcome: 'IGNORED' } // a form answer is not a question for the bot
     const text = (msg.body ?? '').trim()
     if (!TEXT_TYPES.has(msg.type) || !text) {
       return this._handoff(conv, settings, msg, { reason: 'MEDIA', outcome: 'MEDIA', ack: true, lang: conv.bot_language })
