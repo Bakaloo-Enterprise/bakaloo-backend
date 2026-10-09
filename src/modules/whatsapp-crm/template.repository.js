@@ -2,13 +2,13 @@ import { query, getClient } from '../../config/database.js'
 
 const COLUMNS = `id, name, language, meta_category, purpose, parameter_format, status, components, body_text, header_format, variables,
   allow_category_change, meta_template_id, rejection_reason, rejection_detail, quality_score, pending_category, pending_category_at,
-  flagged, locked, submitted_at, last_status_at, last_synced_at, created_at, updated_at`
+  flagged, locked, default_header_url, submitted_at, last_status_at, last_synced_at, created_at, updated_at`
 
 /** Columns a generic patch may touch (never id / created_*). */
 const PATCHABLE = new Set([
   'name', 'language', 'meta_category', 'purpose', 'parameter_format', 'status', 'components', 'body_text', 'header_format', 'variables',
   'allow_category_change', 'meta_template_id', 'rejection_reason', 'rejection_detail', 'quality_score', 'pending_category',
-  'pending_category_at', 'flagged', 'locked', 'submitted_at', 'last_status_at', 'last_synced_at',
+  'pending_category_at', 'flagged', 'locked', 'default_header_url', 'submitted_at', 'last_status_at', 'last_synced_at',
 ])
 const JSONB = new Set(['components', 'variables'])
 

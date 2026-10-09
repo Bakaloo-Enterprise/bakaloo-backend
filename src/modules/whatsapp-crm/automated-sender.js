@@ -60,8 +60,9 @@ export class AutomatedSender {
         productImages: (ids) => this.imageRepo.productImages(ids),
         offerImages: () => this.imageRepo.offerImages(),
       })
-      if (!mediaUrl && String(template.header_format ?? '') === 'IMAGE') return { outcome: 'SKIPPED', reason: 'NO_IMAGE', text: 'No picture was available for this message, so it was not sent.' }
+      if (!mediaUrl && !template.default_header_url && String(template.header_format ?? '') === 'IMAGE') return { outcome: 'SKIPPED', reason: 'NO_IMAGE', text: 'No picture was available for this message, so it was not sent.' }
     }
+    if (!mediaUrl) mediaUrl = template.default_header_url ?? null // the template's saved picture
     const built = buildSendComponents(template, values, { headerMediaUrl: mediaUrl })
     if (built.error) return { outcome: 'FAILED', reason: 'INVALID_TEMPLATE_VALUES', text: built.error }
     if (built.missing.length) return { outcome: 'SKIPPED', reason: 'MISSING_VALUES', text: `Could not fill: ${built.missing.join(', ')}` }

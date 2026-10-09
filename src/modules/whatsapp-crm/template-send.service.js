@@ -66,7 +66,8 @@ export class TemplateSendService {
       merged[k] = typed != null && String(typed).trim() !== '' ? typed : known[k] ?? ''
     }
 
-    const built = buildSendComponents(tpl, merged, { headerMediaUrl })
+    const mediaUrl = String(headerMediaUrl ?? '').trim() || tpl.default_header_url || undefined
+    const built = buildSendComponents(tpl, merged, { headerMediaUrl: mediaUrl })
     if (built.error) throw new CrmError(built.error, 400, 'INVALID_TEMPLATE_VALUES')
     if (built.missing.length) {
       throw new CrmError(`Fill in: ${built.missing.join(', ')}`, 400, 'MISSING_VALUES', built.missing)
@@ -82,6 +83,9 @@ export class TemplateSendService {
     try {
       const { wamid } = await this.client.sendTemplate({ to: conv.wa_id, bsuid: conv.bsuid, name: tpl.name, language: tpl.language, components: built.components })
       const sent = await this.repo.markOutboundSent(queued.id, wamid)
+      if (headerMediaUrl && headerMediaUrl !== tpl.default_header_url && !tpl.default_header_url) {
+        await this.tplRepo.patch(tpl.id, { default_header_url: headerMediaUrl }).catch(() => {}) // remember the first picture used
+      }
       this.emit('crm:message', { conversationId: conv.id, contactId: conv.contact_id, assignedTo: conv.assigned_to ?? null })
       await this.bot?.onAgentReply(conv.id) // a person is handling this chat
       await this.pipeline?.evaluateContact(conv.contact_id)
