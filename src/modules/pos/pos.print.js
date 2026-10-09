@@ -1,5 +1,6 @@
 import QRCode from 'qrcode'
 import { buildPickupQrPayload } from '../../utils/qrToken.js'
+import { buildOrderBill } from '../../utils/orderBill.js'
 
 /**
  * Printable documents for the store printer (Phase 11): an order slip ("invoice") and a package label with the
@@ -53,13 +54,27 @@ table { width: 100%; border-collapse: collapse; } td { vertical-align: top; padd
 .big { font-size: 22px; font-weight: 700; text-align: center; letter-spacing: 1px; }
 .qr { display: block; margin: 4px auto; width: ${paperMm === 58 ? '38mm' : '46mm'}; height: auto; }
 .note { font-size: 10px; text-align: center; }
+.box { border: 1px solid #000; padding: 3px 4px; margin: 4px 0; }
+.tot td { border-top: 1px solid #000; padding-top: 3px; font-size: 13px; }
 </style></head><body>${body}</body></html>`
 }
 
-export function renderInvoice({ shop, order, items, paperMm = 80 }) {
+export function renderInvoice({ shop, order, items, paperMm = 80, cashback = [] }) {
+  const bill = buildOrderBill({ ...order, items }, { cashback })
   const lines = items.map((i) => `<tr><td>${esc(i.name)}${i.unit ? ` <span>(${esc(i.unit)})</span>` : ''}</td><td class="r">${esc(i.quantity)} × ${esc(rupees(i.price))}</td></tr>`).join('')
-  const fee = (label, v) => (Number(v) ? `<tr><td>${esc(label)}</td><td class="r">${esc(rupees(v))}</td></tr>` : '')
-  const discount = Number(order.discount_amount) ? `<tr><td>Discount</td><td class="r">-${esc(rupees(order.discount_amount))}</td></tr>` : ''
+  const money = (v) => (v < 0 ? `-${rupees(-v)}` : rupees(v))
+  const billRows = bill.lines.map((l) =>
+    l.waived
+      ? `<tr><td>${esc(l.label)}</td><td class="r b">FREE</td></tr>`
+      : `<tr><td>${esc(l.label)}</td><td class="r">${esc(money(l.amount))}</td></tr>`).join('')
+  const stateText = { PAID: 'Paid', DUE: 'Due', PENDING: 'Pending', FAILED: 'Failed' }
+  const payRows = bill.payment.parts.map((p) =>
+    `<tr><td>${esc(p.label)} - ${esc(stateText[p.state] ?? p.state)}</td><td class="r">${esc(rupees(p.amount))}</td></tr>`).join('')
+  const collect = bill.payment.collectOnDelivery > 0
+    ? `<div class="box b">COLLECT IN CASH: ${esc(rupees(bill.payment.collectOnDelivery))}</div>` : ''
+  const cashbackRows = bill.cashback.map((c) =>
+    `<div class="c">Cashback ${c.status === 'CREDITED' ? 'credited' : 'to be credited'}: ${esc(rupees(c.amount))}</div>`).join('')
+  const saved = bill.savings.total > 0 ? `<div class="box c b">You saved ${esc(rupees(bill.savings.total))} on this order</div>` : ''
   return page(`Order ${order.order_number}`, `
 <h1>${esc(shop?.name ?? 'Bakaloo')}</h1>
 <div class="c">${esc([shop?.address_line1, shop?.city].filter(Boolean).join(', '))}${shop?.phone ? `<br>${esc(shop.phone)}` : ''}</div>
@@ -69,13 +84,15 @@ export function renderInvoice({ shop, order, items, paperMm = 80 }) {
 <div class="hr"></div>
 <table>${lines}</table>
 <div class="hr"></div>
-<table>
-<tr><td>Subtotal</td><td class="r">${esc(rupees(order.subtotal))}</td></tr>
-${discount}${fee('Delivery', order.delivery_fee)}${fee('Platform fee', order.platform_fee)}${fee('Handling', order.handling_fee)}${fee('Late-night', order.late_night_fee)}${fee('Tax', order.tax_amount)}${fee('Tip', order.tip_amount)}
-<tr class="b"><td>Total</td><td class="r">${esc(rupees(order.total_amount))}</td></tr>
+<div class="b">Bill Details</div>
+<table>${billRows}
+<tr class="b tot"><td>Grand Total</td><td class="r">${esc(rupees(bill.grandTotal))}</td></tr>
 </table>
 <div class="hr"></div>
-<div>${esc(order.payment_method ?? '')} · ${esc(order.payment_status ?? '')}</div>
+<div class="b">Payment</div>
+<table>${payRows || `<tr><td>${esc(bill.payment.methodLabel)}</td><td class="r">${esc(bill.payment.status)}</td></tr>`}</table>
+${collect}${cashbackRows}${saved}
+<div class="hr"></div>
 <div>Deliver to: ${esc(deliveryArea(order.delivery_address))}</div>
 ${order.delivery_notes ? `<div>Note: ${esc(order.delivery_notes)}</div>` : ''}
 <div class="hr"></div><div class="note">Thank you for shopping with Bakaloo</div>`, paperMm)

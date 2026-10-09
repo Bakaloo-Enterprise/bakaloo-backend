@@ -10,6 +10,7 @@ import { ORDER_STATUS, ACTIVE_ORDER_STATUSES } from '../../constants/orderStatus
 import { generateInvoicePDF } from '../../utils/invoiceGenerator.js'
 import { generateGstInvoicePDF } from '../../utils/gstInvoiceGenerator.js'
 import { getActivePickupToken } from '../../utils/pickupTokens.js'
+import { buildOrderBill } from '../../utils/orderBill.js'
 import { normalizeCloudinaryDeliveryUrl } from '../../config/cloudinary.js'
 import { NotificationsRepository } from '../notifications/notifications.repository.js'
 import { NotificationsService } from '../notifications/notifications.service.js'
@@ -436,6 +437,11 @@ export class OrdersService {
     let freeDeliveryOverride = false
     let freeDeliveryShopId = null
     let appliedCouponCashback = null // { amount, creditTrigger } for CASHBACK-type coupons
+    // Who contributed to `appliedCouponDiscount` — the order row only stores
+    // one summed discount_amount + coupon_code, so without this the printed
+    // bill couldn't tell a coupon from a first-order offer or a milestone.
+    // Persisted inside fee_breakdown.discounts (see order-splitter.service.js).
+    const discountParts = []
     if (couponCode) {
       const isSingleShop = groupedByShop.size === 1
       if (!isSingleShop) {
@@ -462,6 +468,9 @@ export class OrdersService {
       // Capture the discount amount so it is actually deducted from the order
       // total (previously the code was stored but the discount was dropped).
       appliedCouponDiscount = Number(couponResult.discount || 0)
+      if (appliedCouponDiscount > 0) {
+        discountParts.push({ code: 'COUPON', label: `Coupon (${couponResult.code})`, amount: appliedCouponDiscount })
+      }
       if (couponResult.freeDelivery) {
         freeDeliveryOverride = true
         freeDeliveryShopId = couponShopId
@@ -504,6 +513,7 @@ export class OrdersService {
           if (reward.discount) {
             appliedCouponDiscount += reward.discount
             couponShopId = couponShopId || Array.from(groupedByShop.keys())[0]
+            discountParts.push({ code: 'FIRST_ORDER_OFFER', label: firstTimeOffer.name || firstTimeOffer.title || 'First-order offer', amount: Number(reward.discount) })
           }
           if (reward.freeDelivery) {
             freeDeliveryOverride = true
@@ -560,6 +570,7 @@ export class OrdersService {
         if (discountApplied) {
           appliedCouponDiscount += reward.discount
           couponShopId = couponShopId || Array.from(groupedByShop.keys())[0]
+          discountParts.push({ code: 'CART_MILESTONE', label: milestone.name || milestone.title || 'Cart milestone reward', amount: Number(reward.discount) })
         }
         const freeDeliveryApplied = isSingleShop && reward.freeDelivery
         if (freeDeliveryApplied) {
@@ -631,6 +642,7 @@ export class OrdersService {
       shopCoords,
       couponDiscount: appliedCouponDiscount,
       couponShopId,
+      discountParts,
       freeDeliveryOverride,
       freeDeliveryShopId,
       // Tip applies to a single order only (single-shop checkouts).
@@ -1778,7 +1790,7 @@ export class OrdersService {
   }
 
   async _enrichCustomerOrder(order) {
-    const [statusHistory, riderLocation, deliveryOtp, b2bSettlements] = await Promise.all([
+    const [statusHistory, riderLocation, deliveryOtp, b2bSettlements, cashback] = await Promise.all([
       this.repo.getStatusHistory(order.id),
       order.riderId && this.fastify?.getRiderLocation
         ? this.fastify.getRiderLocation(order.riderId).catch(() => null)
@@ -1787,12 +1799,21 @@ export class OrdersService {
       // Only a "Place Order" B2B credit order (b2bApprovalStatus set) ever
       // has settlement rows — skip the query entirely for every other order.
       order.b2bApprovalStatus ? this.repo.getB2BSettlements(order.id) : Promise.resolve([]),
+      query(
+        `SELECT amount, status, source_type FROM cashback_transactions
+          WHERE order_id = $1 AND status IN ('PENDING', 'CREDITED')`,
+        [order.id]
+      ).then((r) => r.rows).catch(() => []),
     ])
 
     const [enriched] = await this._attachItemThumbnails([order])
 
     return {
       ...enriched,
+      // One itemised bill (discounts by source, every fee, GST split,
+      // wallet / Razorpay / cash split) — same builder the receipt PDF and
+      // the admin dashboard use, so all of them always agree.
+      bill: buildOrderBill(order, { cashback }),
       deliveryOtp,
       timeline: this._buildCustomerTimeline(order, statusHistory || []),
       tracking: this._buildTrackingData(order, riderLocation),

@@ -9,6 +9,7 @@ import { NotificationsService } from '../../notifications/notifications.service.
 import { buildCustomerOrderEventNotification } from '../../notifications/customer-order-event.helper.js'
 import { ShopProductsRepository } from '../../shop-products/shop-products.repository.js'
 import { ShopProductsService } from '../../shop-products/shop-products.service.js'
+import { buildOrderBill } from '../../../utils/orderBill.js'
 import { extractAddressId } from '../../../utils/deliveryAddress.js'
 import { getActivePickupToken } from '../../../utils/pickupTokens.js'
 import { RiderAssignmentResolverService } from '../../rider-assignment/rider-assignment-resolver.service.js'
@@ -212,6 +213,12 @@ export class AdminOrdersService {
     ])
     if (!order) throw { statusCode: 404, message: 'Order not found' }
 
+    const cashback = await dbQuery(
+      `SELECT amount, status, source_type FROM cashback_transactions
+        WHERE order_id = $1 AND status IN ('PENDING', 'CREDITED')`,
+      [orderId]
+    ).then((r) => r.rows).catch(() => [])
+
     const hasShopCoords = order.shop_lat != null && order.shop_lng != null
     const store = order.shop_id
       ? {
@@ -236,6 +243,9 @@ export class AdminOrdersService {
     return {
       ...order,
       items,
+      cashback,
+      // Itemised bill for the dashboard + printed receipts (utils/orderBill.js).
+      bill: buildOrderBill({ ...order, items: order.items }, { payment, cashback }),
       timeline,
       payment,
       delivery,

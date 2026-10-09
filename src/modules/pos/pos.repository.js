@@ -424,6 +424,7 @@ export class PosRepository {
     const [order, items, shop] = await Promise.all([
       query(
         `SELECT o.order_number, o.created_at, o.subtotal, o.discount_amount, o.delivery_fee, o.platform_fee, o.handling_fee, o.late_night_fee, o.tip_amount, o.tax_amount, o.total_amount,
+                o.coupon_code, o.savings_total, o.wallet_amount_used, o.fee_breakdown, o.quick_delivery_surcharge_amount, o.buyer_gstin, o.items,
                 o.payment_method, o.payment_status, o.delivery_address, o.delivery_notes, o.scheduled_slot_label
            FROM orders o WHERE o.id = $1 AND o.shop_id = $2`,
         [orderId, shopId],

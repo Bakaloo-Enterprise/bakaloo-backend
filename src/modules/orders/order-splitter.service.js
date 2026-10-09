@@ -259,6 +259,12 @@ export class OrderSplitterService {
       quickDeliverySelected,
     })
 
+    // Itemised discount sources (coupon / first-order offer / milestone) so
+    // the bill can name each one — see utils/orderBill.js.
+    if (couponDiscount > 0 && Array.isArray(feeContext.discountParts)) {
+      breakdown.discounts = feeContext.discountParts
+    }
+
     return {
       subtotal: breakdown.itemsSubtotal,
       deliveryFee: breakdown.deliveryFee,

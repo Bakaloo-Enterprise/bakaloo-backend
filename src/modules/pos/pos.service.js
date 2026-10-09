@@ -5,6 +5,7 @@ import {
   packBlockers, packTarget, parsePosRange, pickBlockers, posAbilities, printerOnline, remaining, sortAttention, STATIONS, THRESHOLD_MINUTES,
   PRINT_STUCK_SECONDS, MAX_PRINT_ATTEMPTS,
 } from './pos.rules.js'
+import { buildOrderBill } from '../../utils/orderBill.js'
 import { renderInvoice, renderLabel, renderTest, deliveryArea } from './pos.print.js'
 
 const LANE_LABEL = Object.fromEntries(LANES.map((l) => [l.id, l.label]))
@@ -110,6 +111,9 @@ export class PosService {
     ])
     const handover = assignment ? await this.repo.handover(assignment.id) : null
     const names = await this.peopleNames([f?.picker_id, f?.packer_id])
+    // Money only — same itemised bill as the printed slip; no customer details (agreement §12).
+    const billData = await this.repo.invoiceData(shopId, orderId)
+    const bill = billData.order ? buildOrderBill({ ...billData.order, items: billData.items }) : null
     const lane = boardLane({ orderStatus: order.status, stage: f?.stage, assignmentStatus: assignment?.status, hasRider: Boolean(assignment) })
     const mine = (id) => !id || id === userId || ctx.abilities.manage
 
@@ -138,6 +142,7 @@ export class PosService {
       rider: assignment && { name: assignment.rider_name, id: assignment.rider_id, assignment: assignment.status, pickup: assignment.token_status, assignedAt: assignment.assigned_at, pickedUpAt: assignment.picked_up_at },
       handover: handover && { by: handover.staff_name, at: handover.created_at, scan: handover.scan_result },
       printJobs: jobs.map(publicJob),
+      bill,
       can: this.canDo(ctx, order, f, lines, assignment, mine),
     }
   }

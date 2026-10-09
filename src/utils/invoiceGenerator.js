@@ -3,6 +3,7 @@ import QRCode from 'qrcode'
 import { STORE_INFO } from '../config/storeInfo.js'
 import { signPickupPayload, QR_TOKEN_VERSION } from './qrToken.js'
 import { drawWrappedMultiScriptText, measureWrappedMultiScriptTextHeight } from './multiScriptText.js'
+import { buildOrderBill } from './orderBill.js'
 
 const TERMINAL_BANNER_STATUS = new Set(['CANCELLED', 'REFUNDED'])
 
@@ -21,21 +22,6 @@ const PAGE_WIDTH = PAGE_RIGHT - PAGE_LEFT
 // PDFKit's standard 14 fonts can't render ₹ — any text with a rupee amount
 // must use this embedded font instead (see STORE_INFO.currencyFontPath).
 const CURRENCY_FONT = 'currency'
-
-// Mirrors the dashboard's PAYMENT_METHOD_LABELS (src/lib/constants.ts) so a
-// customer/admin sees the same wording ("Razorpay", not the raw "ONLINE"
-// enum value) on the printed slip as they do in the orders list.
-const PAYMENT_METHOD_LABELS = {
-  COD: 'Cash on Delivery',
-  ONLINE: 'Online (Razorpay)',
-  WALLET: 'Wallet',
-  LEDGER: 'Ledger',
-  MANUAL: 'Manual',
-}
-
-function paymentMethodLabel(rawMethod) {
-  return PAYMENT_METHOD_LABELS[rawMethod] || rawMethod || '-'
-}
 
 /**
  * Find the timeline entry that moved the order INTO its current terminal
@@ -275,68 +261,88 @@ function drawItemsTable(doc, items) {
   doc.moveDown(0.5)
 }
 
+/**
+ * "Bill Details": every line the customer was actually charged or credited
+ * (item total, each named discount, each fee, GST split, tip), the grand
+ * total, then exactly how it is being paid (wallet / Razorpay / cash due).
+ * All numbers come from utils/orderBill.js so this slip, the POS slip, the
+ * admin order screen and the customer app can never disagree.
+ */
 function drawTotals(doc, order) {
-  const subtotal = parseFloat(order.subtotal || 0)
-  const discount = parseFloat(order.discount_amount || order.discountAmount || 0)
-  const delivery = parseFloat(order.delivery_fee || order.deliveryFee || 0)
-  const handling = parseFloat(order.handling_fee || order.handlingFee || 0)
-  const tax = parseFloat(order.tax_amount || order.taxAmount || 0)
-  const total = parseFloat(order.total_amount || order.totalAmount || 0)
-  const savings = parseFloat(order.savings_total || order.savingsTotal || 0)
+  const bill = buildOrderBill(order, { cashback: order.cashback })
 
-  const printLine = (label, value, bold = false) => {
-    const y = doc.y
-    const size = bold ? 9.5 : 8
-    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(size)
-    doc.text(label, PAGE_LEFT, y, { lineBreak: false })
-    drawAmount(doc, value, y, { size, bold })
-    doc.y = y + (bold ? 16 : 13)
-  }
-
-  printLine('Subtotal', subtotal)
-  printLine('Delivery Fee', delivery)
-  printLine('Handling Fee', handling)
-  if (tax > 0) printLine('Tax', tax)
-  if (discount > 0) printLine('Discount', -discount)
-
-  doc.moveTo(PAGE_LEFT, doc.y + 2).lineTo(PAGE_RIGHT, doc.y + 2).stroke()
-  doc.y += 10
-
-  printLine('Total', total, true)
+  doc.font('Helvetica-Bold').fontSize(9).text('Bill Details', PAGE_LEFT, doc.y, { width: PAGE_WIDTH })
   doc.moveDown(0.3)
 
-  // A wallet-partial-payment order (migration 112) has part of the total
-  // already deducted from wallet at order-placement time, with the rest
-  // due via whatever `payment_method` is (COD collects it on delivery,
-  // ONLINE already captured it via Razorpay). Printing only the bare
-  // payment_method string here — as this used to do unconditionally — hid
-  // that split entirely: a COD slip for a ₹120 order with ₹20 already paid
-  // from wallet just said "Cash on Delivery", giving the rider/packer no
-  // way to know only ₹100 is actually still owed.
-  const walletUsed = parseFloat(order.wallet_amount_used || order.walletAmountUsed || 0)
-  const methodLabel = paymentMethodLabel(order.payment_method || order.paymentMethod)
-
-  doc.font('Helvetica').fontSize(8)
-  if (walletUsed > 0) {
-    // Short label, no "Paid via"/"Balance via" prefix — this receipt is
-    // only 207pt wide, and a longer label (e.g. "Balance via Online
-    // (Razorpay)") risks colliding with the right-aligned amount at 8pt.
-    const remaining = Math.max(0, total - walletUsed)
-    let y = doc.y
-    doc.text('Wallet', PAGE_LEFT, y, { lineBreak: false })
-    drawAmount(doc, walletUsed, y, { size: 8 })
-    doc.y = y + 13
-
-    y = doc.y
-    doc.text(methodLabel, PAGE_LEFT, y, { lineBreak: false })
-    drawAmount(doc, remaining, y, { size: 8 })
-    doc.y = y + 13
-  } else {
-    doc.text('Payment Method', PAGE_LEFT, doc.y, { lineBreak: false })
-    doc.text(methodLabel, PAGE_LEFT, doc.y, { width: PAGE_WIDTH, align: 'right', lineBreak: false })
+  // Label (wrapped, left) + right-aligned amount on the first line. Waived
+  // fees print "FREE" with the original amount in the label's note line.
+  const printLine = (label, amountText, { bold = false, size = 8, note = null, amount = null } = {}) => {
+    const y = doc.y
+    const fontSize = bold ? 9.5 : size
+    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize)
+    doc.text(label, PAGE_LEFT, y, { width: PAGE_WIDTH - 62, lineBreak: true })
+    const labelBottom = doc.y
+    if (amount !== null) {
+      drawAmount(doc, amount, y, { size: fontSize, bold })
+    } else if (amountText) {
+      doc.font('Helvetica-Bold').fontSize(fontSize)
+        .text(amountText, PAGE_LEFT, y, { width: PAGE_WIDTH, align: 'right', lineBreak: false })
+    }
+    doc.y = Math.max(labelBottom, y + (bold ? 13 : 11)) + 2
+    if (note) {
+      doc.font(CURRENCY_FONT).fontSize(6.5).text(note, PAGE_LEFT + 6, doc.y - 1, { width: PAGE_WIDTH - 6 })
+      doc.y += 1
+    }
   }
-  doc.moveDown(0.9)
 
+  for (const line of bill.lines) {
+    if (line.waived) {
+      printLine(line.label, 'FREE', {
+        note: `Worth ₹${line.originalAmount.toFixed(2)} — waived`,
+      })
+      continue
+    }
+    printLine(line.label, null, { amount: line.amount })
+  }
+
+  doc.moveTo(PAGE_LEFT, doc.y + 2).lineTo(PAGE_RIGHT, doc.y + 2).stroke()
+  doc.y += 8
+  printLine('Grand Total', null, { bold: true, amount: bill.grandTotal })
+  doc.moveDown(0.3)
+
+  // How it is paid. A wallet-partial order used to show only the bare
+  // payment method, so a COD slip for ₹120 with ₹20 already paid from the
+  // wallet hid that only ₹100 is still owed in cash.
+  const pay = bill.payment
+  doc.font('Helvetica-Bold').fontSize(9).text('Payment', PAGE_LEFT, doc.y, { width: PAGE_WIDTH })
+  doc.moveDown(0.25)
+  const stateText = { PAID: 'Paid', DUE: 'Due', PENDING: 'Pending', FAILED: 'Failed' }
+  for (const part of pay.parts) {
+    printLine(`${part.label} - ${stateText[part.state] || part.state}`, null, { amount: part.amount })
+  }
+  if (pay.parts.length === 0) {
+    printLine(pay.methodLabel, pay.status)
+  }
+  if (pay.collectOnDelivery > 0) {
+    doc.moveDown(0.1)
+    const y = doc.y
+    doc.rect(PAGE_LEFT, y, PAGE_WIDTH, 20).stroke()
+    doc.font('Helvetica-Bold').fontSize(8.5)
+      .text('COLLECT IN CASH', PAGE_LEFT + 6, y + 6, { lineBreak: false })
+    drawAmount(doc, pay.collectOnDelivery, y + 6, { size: 8.5, bold: true })
+    doc.y = y + 26
+  }
+  if (pay.refundAmount > 0) {
+    printLine('Refunded to customer', null, { amount: pay.refundAmount })
+  }
+  doc.moveDown(0.4)
+
+  for (const cb of bill.cashback) {
+    const when = cb.status === 'CREDITED' ? 'credited to wallet' : 'will be credited to wallet'
+    printLine(`Cashback ${when}`, null, { amount: cb.amount })
+  }
+
+  const savings = bill.savings.total
   if (savings > 0) {
     const y = doc.y
     doc.rect(PAGE_LEFT, y, PAGE_WIDTH, 22).stroke()

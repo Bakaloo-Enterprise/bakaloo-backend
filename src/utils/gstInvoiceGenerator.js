@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit'
 import { STORE_INFO } from '../config/storeInfo.js'
+import { buildOrderBill } from './orderBill.js'
 import { drawWrappedMultiScriptText, measureWrappedMultiScriptTextHeight } from './multiScriptText.js'
 
 // A4 tax invoice — deliberately separate from invoiceGenerator.js (an 80mm
@@ -277,8 +278,8 @@ function drawItemsTable(doc, items, split) {
   doc.moveDown(0.4)
 }
 
-function drawTotals(doc, order, split) {
-  if (doc.y > doc.page.height - PAGE_MARGIN - 140) doc.addPage()
+function drawTotals(doc, order, split, bill) {
+  if (doc.y > doc.page.height - PAGE_MARGIN - 240) doc.addPage()
 
   const labelX = PAGE_MARGIN + PAGE_WIDTH - 220
   const valueWidth = 220
@@ -291,6 +292,14 @@ function drawTotals(doc, order, split) {
   }
 
   doc.moveDown(0.3)
+  // How the taxable value is made up — items, discounts and every fee are
+  // all inside it (tax is charged on "delivery and everything"), so show
+  // them instead of one unexplained number.
+  for (const l of bill.lines.filter((x) => ['items', 'discount', 'charge', 'adjustment'].includes(x.kind))) {
+    line(l.waived ? `${l.label} (waived)` : l.label, l.waived ? 0 : l.amount)
+  }
+  doc.moveTo(labelX, doc.y).lineTo(PAGE_MARGIN + PAGE_WIDTH, doc.y).stroke()
+  doc.y += 4
   line('Taxable Value', split.taxableValue)
   if (split.isInterState) {
     line(`IGST @ ${split.igstRate.toFixed(1)}%`, split.igstAmount)
@@ -303,6 +312,12 @@ function drawTotals(doc, order, split) {
   doc.moveTo(labelX, doc.y).lineTo(PAGE_MARGIN + PAGE_WIDTH, doc.y).stroke()
   doc.y += 6
   line('Grand Total', order.totalAmount, true)
+
+  doc.moveDown(0.4)
+  doc.font('Helvetica-Bold').fontSize(8.5).text('Payment', labelX, doc.y)
+  doc.y += 2
+  const stateText = { PAID: 'Paid', DUE: 'Due on delivery', PENDING: 'Pending', FAILED: 'Failed' }
+  for (const p of bill.payment.parts) line(`${p.label} (${stateText[p.state] || p.state})`, p.amount)
 
   doc.moveDown(1)
   doc.font('Helvetica-Oblique').fontSize(7.5).fillColor('#6B7280')
@@ -336,7 +351,7 @@ export function generateGstInvoicePDF(rawOrder) {
     drawHeader(doc, order)
     drawBuyerBlock(doc, order)
     drawItemsTable(doc, order.items, split)
-    drawTotals(doc, order, split)
+    drawTotals(doc, order, split, buildOrderBill(rawOrder))
 
     doc.end()
   })
