@@ -431,7 +431,69 @@ export class AdminWhatsappCrmController {
 
   async testBot(request) {
     const { bot } = getWhatsappServices()
-    return success(await bot.test(request.body.message, request.body.when), 'Bot test')
+    return success(await bot.test(request.body.message, request.body.when, { language: request.body.language ?? null, awaitingArea: Boolean(request.body.awaitingArea) }), 'Bot test')
+  }
+
+  async listBotAreas() {
+    const { botAdmin } = getWhatsappServices()
+    return success(await botAdmin.listAreas(), 'Delivery areas')
+  }
+
+  async createBotArea(request, reply) {
+    const { botAdmin } = getWhatsappServices()
+    try {
+      return success(await botAdmin.createArea(request.body), 'Area added')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
+  async updateBotArea(request, reply) {
+    const { botAdmin } = getWhatsappServices()
+    try {
+      return success(await botAdmin.updateArea(request.params.id, request.body), 'Area updated')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
+  async deleteBotArea(request, reply) {
+    const { botAdmin } = getWhatsappServices()
+    try {
+      await botAdmin.deleteArea(request.params.id)
+      return success(null, 'Area deleted')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
+  async botWaitingList() {
+    const { botAdmin } = getWhatsappServices()
+    return success(await botAdmin.waitingList(), 'Customers waiting for their area')
+  }
+
+  async listProductWords() {
+    const { botAdmin } = getWhatsappServices()
+    return success(await botAdmin.listProductAliases(), 'Product words')
+  }
+
+  async addProductWord(request, reply) {
+    const { botAdmin } = getWhatsappServices()
+    try {
+      return success(await botAdmin.addProductAlias(request.body), 'Word added')
+    } catch (err) {
+      return fail(reply, err)
+    }
+  }
+
+  async deleteProductWord(request, reply) {
+    const { botAdmin } = getWhatsappServices()
+    try {
+      await botAdmin.deleteProductAlias(request.params.id)
+      return success(null, 'Word deleted')
+    } catch (err) {
+      return fail(reply, err)
+    }
   }
 
   async botActivity(request) {

@@ -132,12 +132,15 @@ export const moveCardSchema = {
 const kwList = (max) => ({ type: 'array', items: { type: 'string', minLength: 1, maxLength: 80 }, maxItems: max })
 const ruleProps = {
   name: { type: 'string', minLength: 1, maxLength: 80 },
-  matchType: { type: 'string', enum: ['CONTAINS', 'EXACT', 'STARTS_WITH', 'PINCODE'] },
+  matchType: { type: 'string', enum: ['CONTAINS', 'EXACT', 'STARTS_WITH', 'PINCODE', 'AREA_YES', 'AREA_NO', 'AREA_ASKED', 'PRODUCT'] },
   keywords: kwList(60),
   exactKeywords: kwList(30),
   whenHours: { type: 'string', enum: ['ANY', 'OPEN', 'CLOSED'] },
-  action: { type: 'string', enum: ['REPLY', 'REPLY_HANDOFF', 'HANDOFF', 'OPT_OUT', 'OPT_IN'] },
+  action: { type: 'string', enum: ['REPLY', 'REPLY_HANDOFF', 'HANDOFF', 'OPT_OUT', 'OPT_IN', 'IGNORE'] },
   replyText: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] },
+  replyTextGu: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] },
+  replyTextGl: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] },
+  asksArea: { type: 'boolean' },
   cooldownMinutes: { type: 'integer', minimum: 0, maximum: 1440 },
   isActive: { type: 'boolean' },
 }
@@ -157,6 +160,12 @@ export const updateBotSettingsSchema = {
       maxRepliesPerHour: { type: 'integer', minimum: 1, maximum: 60 },
       fallbackEnabled: { type: 'boolean' },
       fallbackText: { type: 'string', maxLength: 1000 },
+      fallbackTextGu: { type: 'string', maxLength: 1000 },
+      fallbackTextGl: { type: 'string', maxLength: 1000 },
+      playStoreUrl: { type: 'string', maxLength: 500 },
+      appStoreUrl: { type: 'string', maxLength: 500 },
+      websiteUrl: { type: 'string', maxLength: 500 },
+      quotePrices: { type: 'boolean' },
     },
   },
 }
@@ -167,8 +176,23 @@ export const testBotSchema = {
     properties: {
       message: { type: 'string', minLength: 1, maxLength: 500 },
       when: { type: 'string', enum: ['NOW', 'OPEN', 'CLOSED'] },
+      language: { type: 'string', enum: ['en', 'gu', 'gl'] },
+      awaitingArea: { type: 'boolean' },
     },
   },
+}
+const areaProps = {
+  name: { type: 'string', minLength: 1, maxLength: 80 },
+  nameGu: { anyOf: [{ type: 'string', maxLength: 80 }, { type: 'null' }] },
+  aliases: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 40 },
+  isServiceable: { type: 'boolean' },
+  isActive: { type: 'boolean' },
+  position: { type: 'integer', minimum: 0, maximum: 10000 },
+}
+export const createBotAreaSchema = { body: { type: 'object', required: ['name'], properties: areaProps } }
+export const updateBotAreaSchema = { params: idParams, body: { type: 'object', properties: areaProps } }
+export const addProductAliasSchema = {
+  body: { type: 'object', required: ['alias', 'searchTerm'], properties: { alias: { type: 'string', minLength: 1, maxLength: 60 }, searchTerm: { type: 'string', minLength: 1, maxLength: 60 } } },
 }
 export const botActivitySchema = {
   querystring: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } } },

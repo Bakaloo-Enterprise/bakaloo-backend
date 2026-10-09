@@ -8,7 +8,7 @@ const CONVERSATION_SELECT = `
          c.last_message_direction, c.last_inbound_at,
          (c.last_inbound_at IS NOT NULL AND c.last_inbound_at > NOW() - INTERVAL '24 hours') AS window_open,
          ct.id AS contact_id, ct.wa_id, ct.phone, ct.bsuid, ct.wa_username, ct.profile_name, ct.source, ct.referral,
-         ct.marketing_consent,
+         ct.marketing_consent, ct.bot_language,
          COALESCE(ct.user_id, u.id) AS customer_id, u.name AS customer_name,
          a.name AS assigned_name, c.bot_state, c.bot_paused_until, c.bot_handoff_reason,
          COALESCE((SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'color', l.color) ORDER BY lower(l.name))

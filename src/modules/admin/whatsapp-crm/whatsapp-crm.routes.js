@@ -76,6 +76,14 @@ export default async function adminWhatsappCrmRoutes(fastify) {
   route('delete', '/bot/rules/:id', BOT_MANAGE, S.botRuleIdSchema, ctrl.deleteBotRule)
   route('post', '/bot/test', BOT_MANAGE, S.testBotSchema, ctrl.testBot)
   route('get', '/bot/activity', BOT_MANAGE, S.botActivitySchema, ctrl.botActivity)
+  route('get', '/bot/areas', BOT_MANAGE, undefined, ctrl.listBotAreas)
+  route('post', '/bot/areas', BOT_MANAGE, S.createBotAreaSchema, ctrl.createBotArea)
+  route('patch', '/bot/areas/:id', BOT_MANAGE, S.updateBotAreaSchema, ctrl.updateBotArea)
+  route('delete', '/bot/areas/:id', BOT_MANAGE, S.botRuleIdSchema, ctrl.deleteBotArea)
+  route('get', '/bot/waiting-list', BOT_MANAGE, undefined, ctrl.botWaitingList)
+  route('get', '/bot/product-words', BOT_MANAGE, undefined, ctrl.listProductWords)
+  route('post', '/bot/product-words', BOT_MANAGE, S.addProductAliasSchema, ctrl.addProductWord)
+  route('delete', '/bot/product-words/:id', BOT_MANAGE, S.botRuleIdSchema, ctrl.deleteProductWord)
   // Agents pause / resume the bot on a chat they can access.
   route('post', '/conversations/:id/bot', INBOX_REPLY, S.setConversationBotSchema, ctrl.setConversationBot)
 

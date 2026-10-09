@@ -21,6 +21,13 @@ export function extractPincode(text) {
   return m ? m[0] : null
 }
 
+/** Short answers that are never a place name, so "which area?" -> "yes" must not become "checking yes". */
+const NOT_AN_AREA = new Set([
+  'yes', 'no', 'ya', 'yeah', 'yep', 'nope', 'ha', 'haa', 'han', 'haan', 'na', 'nahi', 'nai', 'nathi', 'ok', 'okay', 'hi', 'hello',
+  'what', 'why', 'how', 'when', 'where', 'who', 'sure', 'please', 'plz', 'pls', 'thanks', 'thank you',
+  'હા', 'ના', 'નહીં', 'નથી', 'શું', 'કેમ', 'કેવી રીતે',
+])
+
 /** true if `phrase` tokens appear as a contiguous run of whole words in `tokens`. */
 function containsPhrase(tokens, phrase) {
   const p = phrase.split(' ')
@@ -42,7 +49,9 @@ function containsPhrase(tokens, phrase) {
  * Does one rule match this message?
  * @param {{ match_type: string, keywords: string[], exact_keywords?: string[], when_hours: string }} rule
  * @param {string} text raw customer text
- * @param {{ isOpen: boolean, pincode: string|null }} ctx
+ * @param {{ isOpen: boolean, pincode: string|null, area?: { is_serviceable: boolean }|null,
+ *           awaitingArea?: boolean, product?: string|null }} ctx
+ *   area/awaitingArea/product are worked out once per message by the service (bot v2, migration 156).
  */
 export function ruleMatches(rule, text, ctx) {
   if (rule.when_hours === 'OPEN' && !ctx.isOpen) return false
@@ -57,6 +66,14 @@ export function ruleMatches(rule, text, ctx) {
   switch (rule.match_type) {
     case 'PINCODE':
       return Boolean(ctx.pincode)
+    case 'AREA_YES': // the message names an area we deliver to
+      return Boolean(ctx.area?.is_serviceable)
+    case 'AREA_NO': // ...an area we do not deliver to (yet)
+      return Boolean(ctx.area) && !ctx.area.is_serviceable
+    case 'AREA_ASKED': // we just asked "which area?" and the answer is a place we do not know
+      return Boolean(ctx.awaitingArea) && !ctx.area && tokens.length <= 6 && !NOT_AN_AREA.has(norm) && !/^\p{N}+$/u.test(norm)
+    case 'PRODUCT': // the message names a product we know a word for
+      return Boolean(ctx.product)
     case 'EXACT':
       return rule.keywords.some((k) => normalize(k) === norm)
     case 'STARTS_WITH':
@@ -84,6 +101,7 @@ export function renderTemplate(template, vars) {
   return String(template ?? '')
     .replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_, k) => (vars[k] != null ? String(vars[k]) : ''))
     .replace(/[ \t]+\n/g, '\n')
+    .replace(/ +,/g, ',')
     .trim()
     .slice(0, 4096)
 }

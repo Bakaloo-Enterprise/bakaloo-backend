@@ -112,7 +112,7 @@ describe.skipIf(!enabled)('WhatsApp CRM — bot', () => {
       await customerSays(WA.a, 'Hi!')
       expect(sent).toHaveLength(1)
       expect(sent[0].body).toMatch(/^Hi Rahul, welcome to Bakaloo/)
-      expect(sent[0].body).toMatch(/1 – Delivery area/)
+      expect(sent[0].body).toMatch(/Which area are you in\?/)
       const m = await botMsgs(WA.a)
       expect(m).toHaveLength(1)
       expect(m[0]).toMatchObject({ is_bot: true, status: 'SENT' })
@@ -122,10 +122,10 @@ describe.skipIf(!enabled)('WhatsApp CRM — bot', () => {
       expect(await events(WA.a)).toEqual(['REPLIED'])
     })
 
-    it('after-hours greeting is used when the store is closed', async () => {
+    it('the greeting is answered instantly even when the store is closed (bot v2 asks the area 24x7)', async () => {
       storeOpen = false
       await customerSays(WA.a, 'hello')
-      expect(sent[0].body).toMatch(/We are closed right now/)
+      expect(sent[0].body).toMatch(/Which area are you in\?/)
     })
 
     it('a bot reply does NOT count as an agent reply for the pipeline (still a Lead)', async () => {
@@ -274,7 +274,7 @@ describe.skipIf(!enabled)('WhatsApp CRM — bot', () => {
     })
     it('quick-reply button taps are read as text', async () => {
       await customerSays(WA.a, null, { type: 'button', extra: { button: { text: 'Need help', payload: 'help' } } })
-      expect(sent[0].body).toMatch(/Reply with a number/)
+      expect(sent[0].body).toMatch(/I can help you with/)
     })
     it('a message older than 10 minutes (backlog after an outage) is not answered late', async () => {
       await customerSays(WA.a, 'hi', { ageMs: 11 * 60 * 1000 })
@@ -331,7 +331,7 @@ describe.skipIf(!enabled)('WhatsApp CRM — bot', () => {
       expect(r).toMatchObject({ matched: true, outcome: 'REPLIED', rule: { name: 'Order status' } })
       expect(r.reply).toMatch(/\(sample\)/)
       const g = await bot.test('hello', 'CLOSED')
-      expect(g.rule.name).toBe('Greeting (after hours)')
+      expect(g.rule.name).toBe('Greeting – ask area')
       const none = await bot.test('zzz qqq', 'NOW')
       expect(none).toMatchObject({ matched: false, outcome: 'NO_MATCH', handoff: true })
       expect(sent).toHaveLength(0)
