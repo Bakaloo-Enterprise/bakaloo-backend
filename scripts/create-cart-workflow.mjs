@@ -6,6 +6,7 @@
  *   node scripts/create-cart-workflow.mjs --apply         # creates it, switched off (review it on the Workflows page)
  *   node scripts/create-cart-workflow.mjs --apply --activate
  *   node scripts/create-cart-workflow.mjs --template my_template_name --delay 5
+ *   node scripts/create-cart-workflow.mjs --map body.1=customer_name    # templates with numbered variables ({{1}})
  *
  * What it sets up: a cart idle for 5 minutes -> the approved template (with the customer's cart picture when the
  * template has an image) -> if Meta can't deliver the template and the customer wrote in the last 24 hours, a normal
@@ -30,6 +31,11 @@ const activate = process.argv.includes('--activate')
 const force = process.argv.includes('--force')
 const templateName = arg('template', 'abandon_cart_reminder_normal')
 const delay = Number(arg('delay', 5))
+// --map body.1=customer_name  (repeatable): what a numbered template variable means
+const explicitMap = {}
+process.argv.forEach((a, i) => {
+  if (process.argv[i - 1] === '--map' && a.includes('=')) explicitMap[a.slice(0, a.indexOf('='))] = a.slice(a.indexOf('=') + 1)
+})
 
 const TOKENS = ['customer_name', 'cart_value', 'item_count', 'cart_items', 'cart_link']
 const SYNONYMS = {
@@ -61,13 +67,23 @@ try {
     const problems = []
     for (const v of vars) {
       const key = String(v.key)
+      if (explicitMap[key]) {
+        if (!TOKENS.includes(explicitMap[key])) throw new Error(`--map ${key}=${explicitMap[key]}: use one of ${TOKENS.join(', ')}`)
+        values[key] = `{{${explicitMap[key]}}}`
+        continue
+      }
       if (TOKENS.includes(key)) continue // filled automatically
       const mapped = SYNONYMS[String(v.name).toLowerCase()]
       if (mapped && TOKENS.includes(mapped)) values[key] = `{{${mapped}}}`
       else problems.push(`${key} (${v.where})`)
     }
     if (problems.length) {
-      throw new Error(`I can't tell what to put in: ${problems.join(', ')}.\nCreate the workflow on the Workflows page and type those values (use {{customer_name}}, {{cart_value}}, {{cart_items}}, {{cart_link}}).`)
+      const body = String(tpl.body_text ?? '').replace(/\s+/g, ' ').slice(0, 200)
+      throw new Error(
+        `I can't tell what to put in: ${problems.join(', ')}.\nTemplate text: "${body}"\n` +
+          `Say what each one is with --map, e.g.:  node scripts/create-cart-workflow.mjs ${problems.map((p) => `--map ${p.split(' ')[0]}=customer_name`).join(' ')}\n` +
+          `(choose from: ${TOKENS.join(', ')}), or create the workflow on the Workflows page.`,
+      )
     }
 
     const input = {
