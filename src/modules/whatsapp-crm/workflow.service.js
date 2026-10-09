@@ -1,7 +1,10 @@
 import { CrmError } from './errors.js'
 import { friendlyName } from './bot.js'
 import { canSend } from './template.js'
-import { TRIGGERS, cartRef, evaluateConditions, isQuietHoursIST, unfillableKeys, validateWorkflowInput } from './campaign.js'
+import {
+  DEFAULT_CART_COOLDOWN_HOURS, TRIGGERS, cartRef, classifySendError, evaluateConditions, fallbackDecision, isQuietHoursIST, isServiceWindowOpen, pickFallbackText,
+  renderFallback, tokensIn, unfillableKeys, validateWorkflowInput,
+} from './campaign.js'
 
 const SCAN_BATCH = 100
 
@@ -105,6 +108,8 @@ export class WorkflowService {
       if (missing.length) throw new CrmError(`Fill in a value for: ${missing.join(', ')}`, 400, 'MISSING_VALUES', { actions: `Fill in a value for: ${missing.join(', ')}` })
       const usesLink = JSON.stringify(a.values ?? {}).includes('cart_link') || this.usesToken(tpl, a, 'cart_link') || this.usesToken(tpl, a, 'cart_ref')
       if (usesLink && !this.appUrl && forActivation) throw new CrmError('The cart link needs CUSTOMER_APP_URL to be set on the server.', 409, 'CART_LINK_NOT_CONFIGURED')
+      const fallbackUsesLink = Object.values(a.fallbackTexts ?? {}).some((t) => tokensIn(t).some((k) => k === 'cart_link' || k === 'cart_ref'))
+      if (fallbackUsesLink && !this.appUrl && forActivation) throw new CrmError('The cart link in the normal message needs CUSTOMER_APP_URL to be set on the server.', 409, 'CART_LINK_NOT_CONFIGURED')
       if (a.couponId && forActivation && !(await this.repo.publicCoupon(a.couponId))) {
         throw new CrmError('That coupon is not active, has expired, or is limited to certain customers. Only coupons anyone can use may be sent automatically.', 409, 'COUPON_UNAVAILABLE')
       }
@@ -153,6 +158,15 @@ export class WorkflowService {
 
     const contact = await this.repo.contactForUser(run.user_id)
     if (!contact) return this.repo.finishRun(run.id, { status: 'SKIPPED', reason: 'NO_ADDRESS' })
+
+    // One reminder per customer per cooldown, however many carts they leave (the same person re-adding and
+    // leaving again must not get a second message minutes later).
+    if (kind === 'cart') {
+      const hours = Number(wf.trigger_config?.cooldown_hours ?? DEFAULT_CART_COOLDOWN_HOURS)
+      if (hours > 0 && (await this.repo.recentCartReminder(run.user_id, hours, run.id))) {
+        return this.repo.finishRun(run.id, { status: 'SKIPPED', reason: 'RECENTLY_REMINDED', contactId: contact.id })
+      }
+    }
 
     const tokens = this.tokensFor(kind, ctx, contact)
     let result = { status: 'SKIPPED', reason: 'NO_MESSAGE_ACTION' }
@@ -212,10 +226,78 @@ export class WorkflowService {
         return { status: 'SENT', messageId: out.message.id }
       case 'RETRY':
         return { release: true }
-      case 'SKIPPED':
-        return { status: 'SKIPPED', reason: out.reason, messageId: out.messageId }
-      default:
-        return { status: 'FAILED', reason: out.reason, messageId: out.messageId }
+      default: {
+        // The template could not go out. A normal message may still reach a customer who wrote to us recently.
+        const fb = await this.tryFallback({ wf, run, kind, ctx, contact, tokens: withCoupon, action, reason: out.reason, couponId })
+        if (fb) return fb
+        return out.outcome === 'SKIPPED'
+          ? { status: 'SKIPPED', reason: out.reason, messageId: out.messageId }
+          : { status: 'FAILED', reason: out.reason, messageId: out.messageId }
+      }
+    }
+  }
+
+  /**
+   * Send the action's normal-message version, if it has one and the rules allow it (24-hour window, not opted out,
+   * not suppressed, every {{token}} filled). Returns the run result, or null when no fallback applies so the
+   * original outcome stands.
+   */
+  async tryFallback({ wf, run, kind, ctx, contact, tokens, action, reason, couponId }) {
+    const text = pickFallbackText(action.fallbackTexts, contact.bot_language)
+    const decision = fallbackDecision({
+      reason,
+      consent: contact.consent,
+      suppressed: contact.suppressed,
+      windowOpen: isServiceWindowOpen(contact.last_inbound_at, this.now()),
+      hasText: Boolean(text),
+    })
+    if (!decision.ok) return null
+    const filled = renderFallback(text, tokens)
+    if (filled.missing.length) {
+      this.logger.warn({ workflowId: wf.id, missing: filled.missing }, 'Normal-message fallback not sent: a value could not be filled')
+      return null
+    }
+    const out = await this.sender.sendText({ contact, body: filled.text, workflowId: wf.id })
+    if (out.outcome !== 'SENT') return { status: 'FAILED', reason: out.reason, messageId: out.messageId }
+    if (kind === 'cart') {
+      await this.repo.linkCartMessage({ cartId: ctx.id, messageId: out.message.id, runId: run.id, couponId: couponId && tokensIn(text).includes('coupon_code') ? couponId : null })
+    }
+    return { status: 'SENT', reason: 'FALLBACK_TEXT', messageId: out.message.id }
+  }
+
+  /**
+   * Meta accepted the template but reported later (status webhook) that it was not delivered, e.g. the
+   * per-person marketing limit. Send the normal-message version instead, once, if the rules allow it.
+   * Never throws into the webhook.
+   * @param {string} messageId the failed template message
+   * @param {{ code?: number|null }} [error]
+   */
+  async onTemplateFailed(messageId, error = {}) {
+    try {
+      const run = await this.repo.runForMessage(messageId)
+      if (!run || run.subject_type !== 'ABANDONED_CART') return { skipped: 'NOT_A_CART_REMINDER' }
+      const action = (run.actions ?? []).find((a) => a.type === 'SEND_TEMPLATE' && a.templateId === run.template_id)
+      if (!action?.fallbackTexts) return { skipped: 'NO_FALLBACK_TEXT' }
+      if (this.now().getTime() - new Date(run.message_created_at).getTime() > 2 * 60 * 60 * 1000) return { skipped: 'TOO_OLD' }
+
+      const verdict = classifySendError({ code: error.code ?? null, retryable: false }, 1)
+      if (!(await this.repo.claimFallback(run.id))) return { skipped: 'ALREADY_HANDLED' }
+
+      const ctx = await this.repo.cartContext(run.subject_id)
+      const contact = ctx ? await this.repo.contactForUser(run.user_id) : null
+      const tpl = await this.tplRepo.get(run.template_id)
+      const finish = (reason) => this.repo.setRunReason(run.id, reason)
+      if (!ctx || !contact || !tpl) return finish('FALLBACK_SKIPPED_EVENT_GONE')
+      if (!(await this.repo.cartStillOpen(ctx.id))) return finish('FALLBACK_SKIPPED_CART_RECOVERED')
+      if (tpl.meta_category === 'MARKETING' && isQuietHoursIST(this.now())) return finish('FALLBACK_SKIPPED_QUIET_HOURS')
+
+      const wf = { id: run.workflow_id }
+      const tokens = this.tokensFor('cart', ctx, contact)
+      const out = await this.tryFallback({ wf, run, kind: 'cart', ctx, contact, tokens, action, reason: verdict.reason, couponId: null })
+      return finish(out ? (out.status === 'SENT' ? 'FALLBACK_SENT' : `FALLBACK_${out.reason}`) : 'FALLBACK_NOT_ALLOWED')
+    } catch (err) {
+      this.logger.warn({ err: err.message, messageId }, 'Could not send the normal-message fallback after a failed template')
+      return { error: true }
     }
   }
 }

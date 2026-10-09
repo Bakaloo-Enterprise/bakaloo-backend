@@ -95,4 +95,31 @@ export class AutomatedSender {
       return { outcome: 'FAILED', reason: verdict.reason, code: meta.code ?? null, text: meta.details || meta.message, pauseCampaign: verdict.pauseCampaign, messageId: queued.message.id }
     }
   }
+
+  /**
+   * A normal (non-template) text for a workflow, used only inside the customer's 24-hour window.
+   * Stored like any outbound message (tagged with the workflow, so analytics and order credit work), never
+   * pauses the bot and never counts as a person replying. No retry: a duplicate text is worse than a missed one.
+   * @returns {Promise<{ outcome: 'SENT', message: object } | { outcome: 'FAILED', reason: string, code?: number|null, text?: string, messageId?: string }>}
+   */
+  async sendText({ contact, body, workflowId }) {
+    const queued = await this.repo.withTransaction(async (client) => {
+      const conv = await this.repo.ensureConversation(contact.id, client)
+      const msg = await this.repo.insertOutboundQueued({ conversationId: conv.id, contactId: contact.id, type: 'text', body, workflowId }, client)
+      await this.repo.bumpConversationForOutbound(conv.id, body.slice(0, 200), client, { keepAwaiting: true })
+      return { conversationId: conv.id, message: msg }
+    })
+    try {
+      const { wamid } = await this.client.sendText({ to: contact.wa_id, bsuid: contact.bsuid, body })
+      const sent = await this.repo.markOutboundSent(queued.message.id, wamid)
+      this.emit('crm:message', { conversationId: queued.conversationId, contactId: contact.id, assignedTo: null })
+      return { outcome: 'SENT', message: sent }
+    } catch (err) {
+      const meta = err instanceof MetaApiError ? err : new MetaApiError(err?.message ?? 'Send failed', { retryable: false })
+      await this.repo.markOutboundFailed(queued.message.id, meta)
+      this.emit('crm:message', { conversationId: queued.conversationId, contactId: contact.id, assignedTo: null })
+      this.logger.warn({ contactId: contact.id, code: meta.code, workflowId }, 'Automated WhatsApp text failed')
+      return { outcome: 'FAILED', reason: 'FALLBACK_SEND_FAILED', code: meta.code ?? null, text: meta.details || meta.message, messageId: queued.message.id }
+    }
+  }
 }

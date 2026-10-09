@@ -162,7 +162,7 @@ export class WorkflowRepository {
   async contactForUser(userId) {
     const found = await query(
       `SELECT c.id, c.wa_id, c.bsuid, c.phone, c.user_id, c.profile_name, c.marketing_consent AS consent,
-              c.last_inbound_at IS NOT NULL AS has_messaged_us, (s.contact_id IS NOT NULL) AS suppressed, u.name AS customer_name
+              c.last_inbound_at IS NOT NULL AS has_messaged_us, c.last_inbound_at, c.bot_language, (s.contact_id IS NOT NULL) AS suppressed, u.name AS customer_name
          FROM wa_contacts c LEFT JOIN wa_suppression s ON s.contact_id = c.id LEFT JOIN users u ON u.id = c.user_id
         WHERE c.user_id = $1 OR c.phone = (SELECT phone FROM users WHERE id = $1)
         ORDER BY (c.user_id = $1) DESC, c.last_inbound_at DESC NULLS LAST LIMIT 1`,
@@ -177,7 +177,7 @@ export class WorkflowRepository {
     )
     const again = await query(
       `SELECT c.id, c.wa_id, c.bsuid, c.phone, c.user_id, c.profile_name, c.marketing_consent AS consent,
-              c.last_inbound_at IS NOT NULL AS has_messaged_us, (s.contact_id IS NOT NULL) AS suppressed, u.name AS customer_name
+              c.last_inbound_at IS NOT NULL AS has_messaged_us, c.last_inbound_at, c.bot_language, (s.contact_id IS NOT NULL) AS suppressed, u.name AS customer_name
          FROM wa_contacts c LEFT JOIN wa_suppression s ON s.contact_id = c.id LEFT JOIN users u ON u.id = c.user_id WHERE c.user_id = $1 LIMIT 1`,
       [userId],
     )
@@ -194,6 +194,44 @@ export class WorkflowRepository {
       [couponId],
     )
     return rows[0] ?? null
+  }
+
+  /** The workflow run that sent this (template) message, with what is needed to try a normal message instead. */
+  async runForMessage(messageId) {
+    const { rows } = await query(
+      `SELECT r.id, r.workflow_id, r.subject_type, r.subject_id, r.user_id, w.actions, m.template_id, m.created_at AS message_created_at
+         FROM wa_workflow_runs r JOIN wa_workflows w ON w.id = r.workflow_id JOIN wa_messages m ON m.id = r.message_id
+        WHERE r.message_id = $1 AND r.status = 'SENT'`,
+      [messageId],
+    )
+    return rows[0] ?? null
+  }
+
+  /** Once per run: only the caller that flips the reason may send the fallback. */
+  async claimFallback(runId) {
+    const { rowCount } = await query(
+      `UPDATE wa_workflow_runs SET reason = 'FALLBACK_PENDING' WHERE id = $1 AND status = 'SENT' AND (reason IS NULL OR reason NOT LIKE 'FALLBACK%')`,
+      [runId],
+    )
+    return rowCount > 0
+  }
+
+  async setRunReason(runId, reason) {
+    await query(`UPDATE wa_workflow_runs SET reason = $2 WHERE id = $1`, [runId, reason])
+  }
+
+  /**
+   * Did this customer already get a cart reminder (from ANY cart-abandoned workflow) in the last N hours?
+   * Counts only runs that really sent something, and never the run being processed.
+   */
+  async recentCartReminder(userId, hours, exceptRunId) {
+    const { rows } = await query(
+      `SELECT 1 FROM wa_workflow_runs r JOIN wa_workflows w ON w.id = r.workflow_id
+        WHERE r.user_id = $1 AND w.trigger_type = 'CART_ABANDONED' AND r.status = 'SENT' AND r.message_id IS NOT NULL
+          AND r.id <> $3 AND r.finished_at > NOW() - ($2 || ' hours')::interval LIMIT 1`,
+      [userId, String(hours), exceptRunId],
+    )
+    return rows.length > 0
   }
 
   async cartStillOpen(cartId) {

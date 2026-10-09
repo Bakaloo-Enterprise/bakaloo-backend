@@ -113,6 +113,58 @@ export function classifySendError(meta, attempts, maxAttempts = 3) {
   }
 }
 
+// ─── Normal-message fallback (workflows) ─────────────────────────────
+
+/** WhatsApp lets a business send ANY message (no template) for 24 hours after the customer last wrote. */
+export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000
+export const FALLBACK_LANGS = Object.freeze(['gu', 'en', 'gl'])
+export const MAX_FALLBACK_CHARS = 1000
+
+/** Why a template could not go out, where a plain text can still reach the customer. */
+const FALLBACK_REASONS = new Set([
+  'TEMPLATE_NOT_SENDABLE', 'TEMPLATE_PROBLEM', 'MISSING_VALUES', 'NO_IMAGE', 'INVALID_TEMPLATE_VALUES', 'MARKETING_CAP', 'NO_CONSENT', 'SEND_FAILED',
+])
+
+export function isServiceWindowOpen(lastInboundAt, at = new Date()) {
+  if (!lastInboundAt) return false
+  const t = new Date(lastInboundAt).getTime()
+  return Number.isFinite(t) && at.getTime() - t < SERVICE_WINDOW_MS
+}
+
+/**
+ * After the template failed or was refused, may we try a normal text instead?
+ * Only when the customer wrote to us in the last 24 hours (Meta's rule), they have not opted out, are not on
+ * the do-not-contact list, and the failure is one a text can get around. A customer who blocked us, is not on
+ * WhatsApp, or opted out never gets the fallback.
+ */
+export function fallbackDecision({ reason, consent, suppressed = false, windowOpen, hasText }) {
+  if (!hasText) return { ok: false, reason: 'NO_FALLBACK_TEXT' }
+  if (suppressed) return { ok: false, reason: 'SUPPRESSED' }
+  if (consent === 'OPTED_OUT') return { ok: false, reason: 'OPTED_OUT' }
+  if (!FALLBACK_REASONS.has(reason)) return { ok: false, reason: 'FALLBACK_NOT_APPLICABLE' }
+  if (!windowOpen) return { ok: false, reason: 'WINDOW_CLOSED' }
+  return { ok: true }
+}
+
+/** The customer's language if we know it, else Gujarati (the audience), else whatever text exists. */
+export function pickFallbackText(texts, lang) {
+  const t = texts ?? {}
+  for (const l of [lang, 'gu', 'en', 'gl']) if (l && typeof t[l] === 'string' && t[l].trim()) return t[l].trim()
+  return null
+}
+
+const TOKEN_RE = /\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}/gi
+export function tokensIn(text) {
+  return [...new Set([...String(text ?? '').matchAll(TOKEN_RE)].map((m) => m[1].toLowerCase()))]
+}
+
+/** Fill a fallback text. If any {{token}} has no value the text is NOT sent (no "₹ " or empty links). */
+export function renderFallback(text, tokens) {
+  const missing = tokensIn(text).filter((k) => tokens?.[k] == null || String(tokens[k]).trim() === '')
+  if (missing.length) return { missing }
+  return { text: interpolate(text, tokens).replace(/[ \t]+\n/g, '\n').trim().slice(0, 4096), missing: [] }
+}
+
 // ─── Validation ──────────────────────────────────────────────────────
 
 export const AUDIENCE_TYPES = Object.freeze(['SEGMENT', 'LABEL', 'STAGE', 'IMPORT', 'ALL_OPTED_IN'])
@@ -187,6 +239,25 @@ export const ORDER_TRIGGER_STATUSES = Object.freeze(['CONFIRMED', 'PACKED', 'OUT
 export const OPS = Object.freeze(['gt', 'gte', 'lt', 'lte', 'eq', 'neq'])
 export const ACTION_TYPES = Object.freeze(['SEND_TEMPLATE', 'ADD_LABEL'])
 export const MAX_CART_DELAY_MINUTES = 24 * 60
+/** One cart reminder per customer per this many hours (0 = no limit), however many carts they abandon. */
+export const DEFAULT_CART_COOLDOWN_HOURS = 24
+
+/** @returns {{ value?: Record<string,string>, error?: string }} value is undefined when there is no text at all */
+export function validateFallbackTexts(texts, allowedTokens, hasCoupon) {
+  if (texts == null) return {}
+  if (typeof texts !== 'object' || Array.isArray(texts)) return { error: 'The normal message must be text.' }
+  const allowed = new Set(hasCoupon ? allowedTokens : allowedTokens.filter((t) => t !== 'coupon_code'))
+  const out = {}
+  for (const l of FALLBACK_LANGS) {
+    const t = String(texts[l] ?? '').trim()
+    if (!t) continue
+    if (t.length > MAX_FALLBACK_CHARS) return { error: `The normal message can be at most ${MAX_FALLBACK_CHARS} characters.` }
+    const bad = tokensIn(t).find((k) => !allowed.has(k))
+    if (bad) return { error: `{{${bad}}} cannot be used in the normal message here.` }
+    out[l] = t
+  }
+  return Object.keys(out).length ? { value: out } : {}
+}
 
 export function validateWorkflowInput(i, { partial = false } = {}) {
   const errors = {}
@@ -210,7 +281,9 @@ export function validateWorkflowInput(i, { partial = false } = {}) {
     if (trigger === 'CART_ABANDONED') {
       const d = cfg.delayMinutes ?? 5
       if (!Number.isInteger(d) || d < 1 || d > MAX_CART_DELAY_MINUTES) errors.triggerConfig = 'Wait time must be between 1 minute and 24 hours.'
-      out.triggerConfig = { delay_minutes: d }
+      const cd = cfg.cooldownHours ?? DEFAULT_CART_COOLDOWN_HOURS
+      if (!Number.isInteger(cd) || cd < 0 || cd > 24 * 14) errors.triggerConfig = 'Reminder gap must be between 0 (off) and 336 hours.'
+      out.triggerConfig = { delay_minutes: d, cooldown_hours: cd }
     } else if (trigger === 'ORDER_STATUS') {
       if (!ORDER_TRIGGER_STATUSES.includes(cfg.status)) errors.triggerConfig = `Choose an order status: ${ORDER_TRIGGER_STATUSES.join(', ')}.`
       out.triggerConfig = { status: cfg.status }
@@ -240,13 +313,24 @@ export function validateWorkflowInput(i, { partial = false } = {}) {
           if (r.error) { errors.actions = r.error; break }
         }
         if (a.couponId && (trigger !== 'CART_ABANDONED' || !UUID.test(String(a.couponId)))) { errors.actions = 'A coupon can only be attached to a cart reminder.'; break }
+        if (a.type === 'SEND_TEMPLATE' && a.fallbackTexts != null) {
+          const fb = validateFallbackTexts(a.fallbackTexts, TRIGGERS[trigger]?.tokens ?? [], Boolean(a.couponId))
+          if (fb.error) { errors.actions = fb.error; break }
+        }
       }
       if (!errors.actions) {
-        out.actions = acts.map((a) =>
-          a.type === 'SEND_TEMPLATE'
-            ? { type: 'SEND_TEMPLATE', templateId: a.templateId, values: Object.fromEntries(Object.entries(a.values ?? {}).map(([k, v]) => [k, String(v ?? '').slice(0, 500)])), ...(a.couponId ? { couponId: a.couponId } : {}), ...(a.imageSource ? { imageSource: validateImageSource(a.imageSource, { allowCart: trigger === 'CART_ABANDONED' }).value } : {}) }
-            : { type: 'ADD_LABEL', labelId: a.labelId },
-        )
+        out.actions = acts.map((a) => {
+          if (a.type !== 'SEND_TEMPLATE') return { type: 'ADD_LABEL', labelId: a.labelId }
+          const fb = validateFallbackTexts(a.fallbackTexts, TRIGGERS[trigger]?.tokens ?? [], Boolean(a.couponId)).value
+          return {
+            type: 'SEND_TEMPLATE',
+            templateId: a.templateId,
+            values: Object.fromEntries(Object.entries(a.values ?? {}).map(([k, v]) => [k, String(v ?? '').slice(0, 500)])),
+            ...(a.couponId ? { couponId: a.couponId } : {}),
+            ...(fb ? { fallbackTexts: fb } : {}),
+            ...(a.imageSource ? { imageSource: validateImageSource(a.imageSource, { allowCart: trigger === 'CART_ABANDONED' }).value } : {}),
+          }
+        })
       }
     }
   }

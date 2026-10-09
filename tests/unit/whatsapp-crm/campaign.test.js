@@ -94,7 +94,7 @@ describe('validateWorkflowInput', () => {
   const send = { type: 'SEND_TEMPLATE', templateId: uuid(3), values: {} }
   it('defaults the cart wait to 5 minutes and bounds it', () => {
     const r = validateWorkflowInput({ name: 'Cart', triggerType: 'CART_ABANDONED', triggerConfig: {}, actions: [send] })
-    expect(r.value.triggerConfig).toEqual({ delay_minutes: 5 })
+    expect(r.value.triggerConfig).toEqual({ delay_minutes: 5, cooldown_hours: 24 })
     expect(validateWorkflowInput({ name: 'c', triggerType: 'CART_ABANDONED', triggerConfig: { delayMinutes: 0 }, actions: [send] }).errors.triggerConfig).toBeTruthy()
   })
   it('order workflows need a known status', () => {
@@ -135,5 +135,90 @@ describe('evaluateConditions', () => {
 describe('cartRef', () => {
   it('is a short stable code', () => {
     expect(cartRef('123e4567-e89b-12d3-a456-426614174000')).toBe('123e4567e8')
+  })
+})
+
+// ─── Normal-message fallback + cart reminder gap ─────────────────────
+import { fallbackDecision, isServiceWindowOpen, pickFallbackText, renderFallback, tokensIn, validateFallbackTexts, validateWorkflowInput as validateWf } from '../../../src/modules/whatsapp-crm/campaign.js'
+
+describe('isServiceWindowOpen', () => {
+  const now = new Date('2026-10-09T12:00:00Z')
+  it.each([
+    ['2026-10-09T11:59:00Z', true],
+    ['2026-10-08T12:01:00Z', true],
+    ['2026-10-08T11:59:00Z', false],
+    [null, false],
+    ['garbage', false],
+  ])('%s -> %s', (t, expected) => expect(isServiceWindowOpen(t, now)).toBe(expected))
+})
+
+describe('fallbackDecision', () => {
+  const ok = { reason: 'MARKETING_CAP', consent: 'OPTED_IN', suppressed: false, windowOpen: true, hasText: true }
+  it('allows the normal message when a text can get around the failure', () => {
+    for (const reason of ['MARKETING_CAP', 'NO_CONSENT', 'TEMPLATE_NOT_SENDABLE', 'TEMPLATE_PROBLEM', 'NO_IMAGE', 'MISSING_VALUES', 'SEND_FAILED']) {
+      expect(fallbackDecision({ ...ok, reason }).ok).toBe(true)
+    }
+  })
+  it('works for a customer with unknown consent who wrote to us (the ad-lead case)', () => {
+    expect(fallbackDecision({ ...ok, consent: 'UNKNOWN', reason: 'NO_CONSENT' }).ok).toBe(true)
+  })
+  it.each([
+    [{ consent: 'OPTED_OUT' }, 'OPTED_OUT'],
+    [{ suppressed: true }, 'SUPPRESSED'],
+    [{ windowOpen: false }, 'WINDOW_CLOSED'],
+    [{ hasText: false }, 'NO_FALLBACK_TEXT'],
+    [{ reason: 'OPTED_OUT' }, 'FALLBACK_NOT_APPLICABLE'],
+    [{ reason: 'NOT_ON_WHATSAPP' }, 'FALLBACK_NOT_APPLICABLE'],
+    [{ reason: 'BLOCKED_BY_USER' }, 'FALLBACK_NOT_APPLICABLE'],
+    [{ reason: 'QUIET_HOURS' }, 'FALLBACK_NOT_APPLICABLE'],
+  ])('refuses %j -> %s', (over, why) => expect(fallbackDecision({ ...ok, ...over })).toEqual({ ok: false, reason: why }))
+})
+
+describe('pickFallbackText / renderFallback', () => {
+  const t = { gu: 'ગુજરાતી', en: 'English' }
+  it('uses the customer language, else Gujarati, else English, else null', () => {
+    expect(pickFallbackText(t, 'en')).toBe('English')
+    expect(pickFallbackText(t, 'gl')).toBe('ગુજરાતી')
+    expect(pickFallbackText(t, null)).toBe('ગુજરાતી')
+    expect(pickFallbackText({ en: 'E' }, 'gu')).toBe('E')
+    expect(pickFallbackText({}, 'en')).toBeNull()
+    expect(pickFallbackText({ en: '  ' }, 'en')).toBeNull()
+  })
+  it('lists tokens once, case-insensitively', () => {
+    expect(tokensIn('Hi {{customer_name}} {{ Cart_Value }} {{customer_name}}')).toEqual(['customer_name', 'cart_value'])
+  })
+  it('fills tokens, and refuses to send when one has no value', () => {
+    expect(renderFallback('Hi {{customer_name}}, ₹{{cart_value}}', { customer_name: 'Asha', cart_value: 480 })).toEqual({ text: 'Hi Asha, ₹480', missing: [] })
+    expect(renderFallback('You left {{cart_items}}', { cart_items: '' })).toEqual({ missing: ['cart_items'] })
+    expect(renderFallback('Go {{cart_link}}', {})).toEqual({ missing: ['cart_link'] })
+  })
+})
+
+describe('validateFallbackTexts', () => {
+  const tokens = ['customer_name', 'cart_value', 'coupon_code']
+  it('keeps non-empty languages only; none at all means no fallback', () => {
+    expect(validateFallbackTexts({ en: ' Hi ', gu: '', gl: '  ' }, tokens, false)).toEqual({ value: { en: 'Hi' } })
+    expect(validateFallbackTexts({}, tokens, false)).toEqual({})
+    expect(validateFallbackTexts(null, tokens, false)).toEqual({})
+  })
+  it('rejects unknown tokens, a coupon token without a coupon, over-long and non-object input', () => {
+    expect(validateFallbackTexts({ en: '{{oops}}' }, tokens, false).error).toMatch(/oops/)
+    expect(validateFallbackTexts({ en: '{{coupon_code}}' }, tokens, false).error).toMatch(/coupon_code/)
+    expect(validateFallbackTexts({ en: '{{coupon_code}}' }, tokens, true).value).toBeTruthy()
+    expect(validateFallbackTexts({ en: 'x'.repeat(1001) }, tokens, false).error).toMatch(/1000/)
+    expect(validateFallbackTexts('hi', tokens, false).error).toBeTruthy()
+  })
+})
+
+describe('cart reminder gap in the workflow config', () => {
+  const act = [{ type: 'SEND_TEMPLATE', templateId: '11111111-1111-4111-8111-111111111111' }]
+  const mk = (cfg) => validateWf({ name: 'x', triggerType: 'CART_ABANDONED', triggerConfig: cfg, actions: act })
+  it('defaults to 24 hours; 0 turns it off; out of range is refused', () => {
+    expect(mk({}).value.triggerConfig).toEqual({ delay_minutes: 5, cooldown_hours: 24 })
+    expect(mk({ cooldownHours: 0 }).value.triggerConfig.cooldown_hours).toBe(0)
+    expect(mk({ cooldownHours: 336 }).value.triggerConfig.cooldown_hours).toBe(336)
+    expect(mk({ cooldownHours: 337 }).errors.triggerConfig).toBeTruthy()
+    expect(mk({ cooldownHours: -1 }).errors.triggerConfig).toBeTruthy()
+    expect(mk({ cooldownHours: 1.5 }).errors.triggerConfig).toBeTruthy()
   })
 })

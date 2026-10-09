@@ -69,11 +69,12 @@ export function getWhatsappServices() {
     logger,
   })
   const sender = new AutomatedSender({ repo, tplRepo, client, emit: emitCrmEvent, logger, imageRepo: new HeaderImageRepository() })
+  const workflows = new WorkflowService({ repo: new WorkflowRepository(), tplRepo, sender, emit: emitCrmEvent, logger, appUrl: env.CUSTOMER_APP_URL })
   cached = {
     repo,
     settings,
     client,
-    inbound: new InboundService({ repo, emit: emitCrmEvent, logger, phoneNumberId: async () => (await settings.resolved()).phoneNumberId, pipeline, bot, templates }),
+    inbound: new InboundService({ repo, emit: emitCrmEvent, logger, phoneNumberId: async () => (await settings.resolved()).phoneNumberId, pipeline, bot, templates, workflows }),
     send: new SendService({ repo, client, emit: emitCrmEvent, logger, pipeline, bot }),
     pipeline,
     bot,
@@ -85,7 +86,7 @@ export function getWhatsappServices() {
     campaigns: new CampaignService({ repo: new CampaignRepository(), tplRepo, sender, emit: emitCrmEvent, logger }),
     prospects: new ProspectService({ repo: new ProspectRepository(), logger }),
     analytics: new AnalyticsService({ repo: new AnalyticsRepository() }),
-    workflows: new WorkflowService({ repo: new WorkflowRepository(), tplRepo, sender, emit: emitCrmEvent, logger, appUrl: env.CUSTOMER_APP_URL }),
+    workflows,
     admin,
     crm: crmService,
   }

@@ -19,9 +19,10 @@ export class InboundService {
    *           logger: { info: Function, warn: Function, debug: Function },
    *           phoneNumberId?: string, now?: () => Date }} deps
    */
-  constructor({ repo, emit, logger, phoneNumberId, pipeline = null, bot = null, templates = null, now = () => new Date() }) {
+  constructor({ repo, emit, logger, phoneNumberId, pipeline = null, bot = null, templates = null, workflows = null, now = () => new Date() }) {
     this.repo = repo
     this.templates = templates
+    this.workflows = workflows
     this.pipeline = pipeline
     this.bot = bot
     this.emit = emit
@@ -161,6 +162,11 @@ export class InboundService {
 
     if (mapped === 'FAILED' && st.error?.code === META_CODE.USER_OPTED_OUT_MARKETING) {
       await this.repo.setMarketingConsent(applied.row.contact_id, 'OPTED_OUT')
+    }
+
+    // A cart-reminder template that Meta later refused to deliver may be replaced by a normal message.
+    if (mapped === 'FAILED' && this.workflows) {
+      await this.workflows.onTemplateFailed(applied.row.id, { code: st.error?.code ?? null }).catch(() => {})
     }
 
     this.emit('crm:status', {
