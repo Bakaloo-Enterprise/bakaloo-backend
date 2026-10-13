@@ -48,6 +48,8 @@ function makeRepoMock(overrides = {}) {
           : { id: 'wallet-sender', balance: 500 }
       )
     ),
+    // No expiring bonus credits -> the whole balance is transferable.
+    getExpiringTotal: vi.fn().mockResolvedValue(0),
     debit: vi.fn().mockResolvedValue({
       wallet: { id: 'wallet-sender', balance: 400 },
       transaction: { id: 'wtx-debit', amount: 100 },
@@ -80,7 +82,9 @@ describe('WalletService.transfer — counterparty identification by phone number
       'wallet-sender',
       100,
       `Transfer to ${RECIPIENT_PHONE}`,
-      `transfer:${RECIPIENT_ID}`
+      `transfer:${RECIPIENT_ID}`,
+      // transfers must only draw on permanent money, never expiring bonus
+      { skipLots: true }
     )
   })
 
@@ -110,7 +114,7 @@ describe('WalletService.transfer — counterparty identification by phone number
 
     await service.transfer(SENDER_ID, { phone: RECIPIENT_PHONE, amount: 100, description: 'Rent split' })
 
-    expect(repo.debit).toHaveBeenCalledWith(client, 'wallet-sender', 100, 'Rent split', `transfer:${RECIPIENT_ID}`)
+    expect(repo.debit).toHaveBeenCalledWith(client, 'wallet-sender', 100, 'Rent split', `transfer:${RECIPIENT_ID}`, { skipLots: true })
     expect(repo.credit).toHaveBeenCalledWith(
       client,
       'wallet-recipient',

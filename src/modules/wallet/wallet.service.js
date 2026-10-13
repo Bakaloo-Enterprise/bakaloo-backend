@@ -8,6 +8,7 @@ import { getOffsetLimit, buildPagination } from '../../utils/paginate.js'
 import { OrdersRepository } from '../orders/orders.repository.js'
 import { PaymentSettingsService } from '../payment-settings/payment-settings.service.js'
 import { WalletSettingsService } from '../wallet-settings/wallet-settings.service.js'
+import { LOT_LABELS, formatDateIst, formatMoney } from './wallet-lots.js'
 // CashbackService is imported dynamically inside payFromWallet() (not at
 // module top-level) — cashback.service.js itself imports WalletService, so
 // a static import here would be circular. Same convention already used in
@@ -33,14 +34,67 @@ export class WalletService {
    * Get or create wallet for a user
    */
   async getWallet(userId) {
-    return this.repo.getOrCreate(userId)
+    const wallet = await this._getOrCreateSwept(userId)
+
+    const lots = await this.repo.getActiveLots(wallet.id)
+    const expiringBalance = this._round2(lots.reduce((sum, l) => sum + l.remainingAmount, 0))
+    return {
+      ...wallet,
+      // balance = permanentBalance (never expires) + expiringBalance
+      permanentBalance: this._round2(Math.max(0, wallet.balance - expiringBalance)),
+      expiringBalance,
+      nextExpiry: lots[0]
+        ? { amount: lots[0].remainingAmount, expiresAt: lots[0].expiresAt }
+        : null,
+    }
+  }
+
+  /**
+   * Wallet row with any lapsed credits already expired — so a customer
+   * never sees expired money in their balance or misses the "expired" line
+   * in their history because the worker (polls every minute) hasn't run yet.
+   */
+  async _getOrCreateSwept(userId) {
+    const wallet = await this.repo.getOrCreate(userId)
+    if (await this.repo.hasDueLots(wallet.id)) {
+      const swept = await this.repo.expireDueForWallet(wallet.id)
+      return swept || (await this.repo.getOrCreate(userId))
+    }
+    return wallet
+  }
+
+  /**
+   * The customer's still-usable expiring credits, soonest first, for a
+   * "your cashback and when it expires" view.
+   */
+  async getExpiryDetails(userId) {
+    const wallet = await this.getWallet(userId)
+    const lots = await this.repo.getActiveLots(wallet.id)
+    return {
+      balance: wallet.balance,
+      permanentBalance: wallet.permanentBalance,
+      expiringBalance: wallet.expiringBalance,
+      credits: lots.map((l) => ({
+        id: l.id,
+        sourceType: l.sourceType,
+        label: LOT_LABELS[l.sourceType] || 'Cashback',
+        originalAmount: l.originalAmount,
+        remainingAmount: l.remainingAmount,
+        expiresAt: l.expiresAt,
+        createdAt: l.createdAt,
+      })),
+    }
+  }
+
+  _round2(n) {
+    return Math.round(Number(n) * 100) / 100
   }
 
   /**
    * Get wallet transactions (paginated)
    */
   async getTransactions(userId, filters) {
-    const wallet = await this.repo.getOrCreate(userId)
+    const wallet = await this._getOrCreateSwept(userId)
     const { offset, limit } = getOffsetLimit(filters)
     const page = Math.max(1, Math.floor(filters.page || 1))
 
@@ -333,7 +387,14 @@ export class WalletService {
    * Internal only: add money to wallet without a payment gateway.
    * Use this for refunds or admin/manual credits, never for customer top-ups.
    */
-  async addMoney(userId, { amount, description, referenceId, subType, sourceId, orderId }) {
+  /**
+   * `expirySource` (SPIN | SCRATCH | COUPON | OFFER | ADMIN) marks the credit
+   * as expiring bonus money subject to the admin's Wallet → Expiry rules;
+   * leave it unset for real money (top-ups, refunds, plain admin credits),
+   * which never expires. `expiryDays` overrides the configured validity for
+   * this one credit.
+   */
+  async addMoney(userId, { amount, description, referenceId, subType, sourceId, orderId, expirySource, expiryDays }) {
     const client = await getClient()
 
     try {
@@ -347,14 +408,35 @@ export class WalletService {
 
       const { maxWalletBalance } = await this.walletSettingsService.getConfig()
 
+      const expiresAt = expirySource
+        ? await this.walletSettingsService.resolveExpiry(expirySource, { daysOverride: expiryDays })
+        : null
+      const baseDescription = description || 'Money added'
+
       const result = await this.repo.credit(
         client,
         walletForOp.id,
         amount,
-        description || 'Money added',
+        // The unmodified app prints this string verbatim, so the expiry date
+        // goes in the description to reach the customer without app changes.
+        expiresAt ? `${baseDescription} (valid till ${formatDateIst(expiresAt)})` : baseDescription,
         referenceId,
-        { maxBalance: maxWalletBalance, subType, sourceId, orderId }
+        {
+          maxBalance: maxWalletBalance,
+          subType,
+          sourceId,
+          orderId,
+          expiresAt,
+          lotSource: expiresAt ? expirySource : null,
+        }
       )
+
+      // A refund for an order that was part-paid with bonus money gives that
+      // bonus back to its original credit (so it keeps expiring on schedule)
+      // rather than turning it into never-expiring balance.
+      if (subType === 'REFUND' && orderId) {
+        await this.repo.restoreLotsForOrder(client, walletForOp.id, orderId, amount)
+      }
 
       await client.query('COMMIT')
 
@@ -407,7 +489,8 @@ export class WalletService {
         deductible,
         description || 'Wallet adjustment',
         referenceId,
-        { subType, sourceId, orderId }
+        // Reverse the cashback's own credit first if it is still unspent.
+        { subType, sourceId, orderId, preferLotSourceId: sourceId }
       )
 
       await client.query('COMMIT')
@@ -647,6 +730,18 @@ export class WalletService {
         return { success: false, message: 'Insufficient balance' }
       }
 
+      // Only never-expiring money can be sent to someone else; cashback and
+      // prizes are for the customer who earned them.
+      const expiringTotal = await this.repo.getExpiringTotal(client, senderWallet.id)
+      const transferable = senderWallet.balance - expiringTotal
+      if (transferable < amount) {
+        await client.query('ROLLBACK')
+        return {
+          success: false,
+          message: `Only ${formatMoney(Math.max(0, transferable))} of your wallet balance can be transferred — cashback and prizes can't be sent to others`,
+        }
+      }
+
       // Ensure recipient wallet exists
       await client.query(
         `INSERT INTO wallets (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING`,
@@ -670,7 +765,8 @@ export class WalletService {
         senderWallet.id,
         amount,
         description || `Transfer to ${recipient.phone}`,
-        `transfer:${recipient.id}`
+        `transfer:${recipient.id}`,
+        { skipLots: true }
       )
 
       // Credit recipient
@@ -714,11 +810,19 @@ export class WalletService {
   /**
    * Admin: credit a user's wallet (refunds, promotions, etc.)
    */
-  async adminCredit(targetUserId, { amount, description, referenceId }) {
+  /**
+   * `isBonus: true` issues it as expiring promotional credit under the
+   * admin's Expiry → "Admin bonus" rule (or `expiryDays` for this credit
+   * alone); otherwise it is plain, never-expiring money.
+   */
+  async adminCredit(targetUserId, { amount, description, referenceId, isBonus, expiryDays }) {
     return this.addMoney(targetUserId, {
       amount,
-      description: description || 'Admin credit',
+      description: description || (isBonus ? 'Bonus credit' : 'Admin credit'),
       referenceId,
+      subType: isBonus ? 'BONUS' : undefined,
+      expirySource: isBonus ? 'ADMIN' : undefined,
+      expiryDays: isBonus ? expiryDays : undefined,
     })
   }
 
@@ -807,11 +911,14 @@ export class WalletService {
       "SELECT COALESCE(SUM(amount), 0) AS total FROM wallet_transactions WHERE type = 'CREDIT' AND description ILIKE '%refund%' AND COALESCE(status, 'COMPLETED') = 'COMPLETED'"
     )
 
+    const expiryStats = await this.repo.getExpiryStats()
+
     return {
       totalBalance: parseFloat(balanceRes.rows[0].total_balance),
       totalAdded: parseFloat(creditRes.rows[0].total),
       totalUsed: parseFloat(debitRes.rows[0].total),
       totalRefunded: parseFloat(refundRes.rows[0].total),
+      ...expiryStats,
     }
   }
 

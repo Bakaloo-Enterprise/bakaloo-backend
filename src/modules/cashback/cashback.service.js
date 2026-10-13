@@ -4,6 +4,7 @@ import { WalletService } from '../wallet/wallet.service.js'
 import { WalletRepository } from '../wallet/wallet.repository.js'
 import { NotificationsRepository } from '../notifications/notifications.repository.js'
 import { NotificationsService } from '../notifications/notifications.service.js'
+import { formatDateIst } from '../wallet/wallet-lots.js'
 
 const SOURCE_LABELS = {
   COUPON: 'coupon',
@@ -69,11 +70,14 @@ export class CashbackService {
             subType: 'CASHBACK',
             sourceId: tx.id,
             orderId: tx.orderId,
+            // Coupon cashback and first-order/milestone/payment-offer
+            // cashback have separate validity rules in Wallet → Expiry.
+            expirySource: tx.sourceType === 'COUPON' ? 'COUPON' : 'OFFER',
           })
           if (result.success) {
             await this.repo.markCredited(tx.id, result.transaction.id)
             creditedCount++
-            this._notifyCashbackCredited(tx).catch(() => {})
+            this._notifyCashbackCredited(tx, result.transaction?.expiresAt).catch(() => {})
           } else {
             logger.error({ cashbackTxId: tx.id, orderId, message: result.message }, 'Cashback credit failed')
           }
@@ -125,13 +129,13 @@ export class CashbackService {
    * never allowed to affect the credit itself, which has already committed
    * by the time this runs.
    */
-  async _notifyCashbackCredited(tx) {
+  async _notifyCashbackCredited(tx, expiresAt) {
     try {
       await this.notificationsService.sendNotification(tx.userId, {
         title: '🎉 Cashback credited!',
-        body: `₹${tx.amount} cashback from your ${SOURCE_LABELS[tx.sourceType] || 'reward'} has been added to your wallet.`,
+        body: `₹${tx.amount} cashback from your ${SOURCE_LABELS[tx.sourceType] || 'reward'} has been added to your wallet.${expiresAt ? ` Use it before ${formatDateIst(expiresAt)}.` : ''}`,
         type: 'WALLET',
-        data: { type: 'WALLET', orderId: tx.orderId, amount: tx.amount, sourceType: tx.sourceType },
+        data: { type: 'WALLET', orderId: tx.orderId, amount: tx.amount, sourceType: tx.sourceType, expiresAt: expiresAt || null },
       })
     } catch (err) {
       logger.warn({ err: err.message, cashbackTxId: tx.id }, 'Cashback-credited notification failed (non-blocking)')

@@ -1,4 +1,5 @@
 import { query, getClient } from '../../config/database.js'
+import { LOT_SOURCES, expiryDescription } from './wallet-lots.js'
 
 /**
  * Wallet repository — SQL queries for wallets + wallet_transactions
@@ -35,7 +36,13 @@ export class WalletRepository {
       `SELECT * FROM wallets WHERE user_id = $1 FOR UPDATE`,
       [userId]
     )
-    return rows[0] ? this._formatWallet(rows[0]) : null
+    if (!rows[0]) return null
+    // Every credit/debit path locks the wallet through here, so sweeping
+    // lapsed credits at this point guarantees an expired bonus can never be
+    // spent or counted towards a balance check, even if the periodic worker
+    // hasn't reached it yet.
+    const swept = await this._expireDueLots(client, rows[0])
+    return this._formatWallet(swept || rows[0])
   }
 
   /**
@@ -53,7 +60,7 @@ export class WalletRepository {
     amount,
     description,
     referenceId,
-    { maxBalance, subType, sourceId, orderId } = {}
+    { maxBalance, subType, sourceId, orderId, expiresAt, lotSource } = {}
   ) {
     const params = [amount, walletId]
     let sql = `UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE id = $2`
@@ -74,8 +81,8 @@ export class WalletRepository {
     // Record transaction
     const { rows: txRows } = await client.query(
       `INSERT INTO wallet_transactions
-         (wallet_id, type, amount, description, reference_id, balance_after, sub_type, source_id, order_id)
-       VALUES ($1, 'CREDIT', $2, $3, $4, $5, $6, $7, $8)
+         (wallet_id, type, amount, description, reference_id, balance_after, sub_type, source_id, order_id, expires_at)
+       VALUES ($1, 'CREDIT', $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         walletId,
@@ -86,9 +93,25 @@ export class WalletRepository {
         subType || null,
         sourceId || null,
         orderId || null,
+        expiresAt || null,
       ]
     )
     const transaction = this._formatTransaction(txRows[0])
+
+    // An expiring credit also gets a lot, which is what the debit path
+    // spends from and the expiry sweep later removes.
+    if (expiresAt) {
+      if (!LOT_SOURCES.includes(lotSource)) {
+        throw new Error(`Invalid wallet lot source: ${lotSource}`)
+      }
+      await client.query(
+        `INSERT INTO wallet_credit_lots
+           (wallet_id, user_id, source_type, original_amount, remaining_amount,
+            expires_at, credit_tx_id, source_id)
+         VALUES ($1, $2, $3, $4, $4, $5, $6, $7)`,
+        [walletId, wallet.userId, lotSource, amount, expiresAt, transaction.id, sourceId || null]
+      )
+    }
 
     return { wallet, transaction }
   }
@@ -97,7 +120,7 @@ export class WalletRepository {
    * Debit wallet (deduct money) within a transaction
    * Returns { wallet, transaction }
    */
-  async debit(client, walletId, amount, description, referenceId, { subType, sourceId, orderId } = {}) {
+  async debit(client, walletId, amount, description, referenceId, { subType, sourceId, orderId, preferLotSourceId, skipLots } = {}) {
     // Update balance (CHECK constraint enforces >= 0)
     const { rows: walletRows } = await client.query(
       `UPDATE wallets SET balance = balance - $1, updated_at = NOW()
@@ -129,6 +152,14 @@ export class WalletRepository {
       ]
     )
     const transaction = this._formatTransaction(txRows[0])
+
+    // Pay from expiring credits first (soonest expiry first) so a customer
+    // always uses bonus money before the money they topped up themselves.
+    // `skipLots` is for money that must come out of permanent balance only
+    // (wallet-to-wallet transfers: bonus can't be turned into transferable cash).
+    if (!skipLots) {
+      await this._consumeLots(client, walletId, amount, transaction.id, orderId, preferLotSourceId)
+    }
 
     return { wallet, transaction }
   }
@@ -408,7 +439,311 @@ export class WalletRepository {
       orderId: row.order_id ?? null,
       balanceAfter: row.balance_after != null ? parseFloat(row.balance_after) : null,
       status: row.status || 'COMPLETED',
+      expiresAt: row.expires_at ?? null,
       createdAt: row.created_at,
+    }
+  }
+
+  // ─── Expiring credits (wallet_credit_lots) ───────────────────────────
+
+  /**
+   * Take `amount` out of ACTIVE lots, `preferLotSourceId`'s lot first and
+   * then soonest-expiry first. Whatever the lots can't cover came out of
+   * permanent money, which needs no bookkeeping. Caller holds the wallet
+   * row lock.
+   */
+  async _consumeLots(client, walletId, amount, walletTxId, orderId, preferLotSourceId) {
+    let need = Math.round(Number(amount) * 100)
+    if (need <= 0) return 0
+
+    const { rows: lots } = await client.query(
+      `SELECT id, remaining_amount FROM wallet_credit_lots
+       WHERE wallet_id = $1 AND status = 'ACTIVE' AND remaining_amount > 0 AND expires_at > NOW()
+       ORDER BY COALESCE(source_id = $2::uuid, false) DESC, expires_at ASC, created_at ASC
+       FOR UPDATE`,
+      [walletId, preferLotSourceId || null]
+    )
+
+    let consumed = 0
+    for (const lot of lots) {
+      if (need <= 0) break
+      const available = Math.round(parseFloat(lot.remaining_amount) * 100)
+      const take = Math.min(available, need)
+      if (take <= 0) continue
+      const takeAmount = take / 100
+
+      await client.query(
+        `UPDATE wallet_credit_lots
+         SET remaining_amount = remaining_amount - $2,
+             status = CASE WHEN remaining_amount - $2 <= 0 THEN 'EXHAUSTED' ELSE status END,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [lot.id, takeAmount]
+      )
+      await client.query(
+        `INSERT INTO wallet_lot_consumptions (lot_id, wallet_tx_id, order_id, amount)
+         VALUES ($1, $2, $3, $4)`,
+        [lot.id, walletTxId, orderId || null, takeAmount]
+      )
+      need -= take
+      consumed += take
+    }
+    return consumed / 100
+  }
+
+  /**
+   * Give an order's bonus money back to the lots it was taken from when the
+   * order is cancelled/refunded, instead of turning it into never-expiring
+   * balance. Only the part that can still be used (lot not yet expired)
+   * goes back into a lot; the rest simply stays as the permanent credit the
+   * refund already made. Returns the amount restored into lots. Caller holds
+   * the wallet row lock and has already credited `refundAmount`.
+   */
+  async restoreLotsForOrder(client, walletId, orderId, refundAmount) {
+    let budget = Math.round(Number(refundAmount) * 100)
+    if (budget <= 0 || !orderId) return 0
+
+    const { rows } = await client.query(
+      `SELECT c.id, c.lot_id, c.amount, c.restored_amount, l.status, l.expires_at
+       FROM wallet_lot_consumptions c
+       JOIN wallet_credit_lots l ON l.id = c.lot_id
+       WHERE c.order_id = $1 AND l.wallet_id = $2 AND c.restored_amount < c.amount
+       ORDER BY c.created_at ASC
+       FOR UPDATE OF c, l`,
+      [orderId, walletId]
+    )
+
+    let restored = 0
+    for (const row of rows) {
+      if (budget <= 0) break
+      // Already-lapsed bonus stays gone; this refund keeps its permanent value.
+      if (row.status === 'EXPIRED' || new Date(row.expires_at) <= new Date()) continue
+      const open = Math.round((parseFloat(row.amount) - parseFloat(row.restored_amount)) * 100)
+      const give = Math.min(open, budget)
+      if (give <= 0) continue
+      const giveAmount = give / 100
+
+      await client.query(
+        `UPDATE wallet_lot_consumptions SET restored_amount = restored_amount + $2 WHERE id = $1`,
+        [row.id, giveAmount]
+      )
+      await client.query(
+        `UPDATE wallet_credit_lots
+         SET remaining_amount = remaining_amount + $2, status = 'ACTIVE', updated_at = NOW()
+         WHERE id = $1`,
+        [row.lot_id, giveAmount]
+      )
+      budget -= give
+      restored += give
+    }
+    return restored / 100
+  }
+
+  /**
+   * Remove every lapsed ACTIVE lot of a wallet from its balance and write
+   * one DEBIT 'EXPIRY' history row per lot. Caller holds the wallet lock.
+   * Returns the updated wallet row, or null when nothing was due.
+   */
+  async _expireDueLots(client, walletRow) {
+    const { rows: due } = await client.query(
+      `SELECT * FROM wallet_credit_lots
+       WHERE wallet_id = $1 AND status = 'ACTIVE' AND expires_at <= NOW()
+       ORDER BY expires_at ASC
+       FOR UPDATE`,
+      [walletRow.id]
+    )
+    if (due.length === 0) return null
+
+    let current = walletRow
+    for (const lot of due) {
+      const remaining = parseFloat(lot.remaining_amount)
+      if (remaining <= 0) {
+        await client.query(
+          `UPDATE wallet_credit_lots SET status = 'EXHAUSTED', updated_at = NOW() WHERE id = $1`,
+          [lot.id]
+        )
+        continue
+      }
+
+      // balance = permanent + active lots, so the balance always covers a lot.
+      const { rows: walletRows } = await client.query(
+        `UPDATE wallets SET balance = balance - $1, updated_at = NOW()
+         WHERE id = $2 AND balance >= $1 RETURNING *`,
+        [remaining, walletRow.id]
+      )
+      if (walletRows.length === 0) {
+        throw new Error(`Wallet ${walletRow.id} balance is below its expiring credit ${lot.id}`)
+      }
+      current = walletRows[0]
+
+      const { rows: txRows } = await client.query(
+        `INSERT INTO wallet_transactions
+           (wallet_id, type, amount, description, reference_id, balance_after, sub_type, source_id)
+         VALUES ($1, 'DEBIT', $2, $3, $4, $5, 'EXPIRY', $6)
+         RETURNING id`,
+        [
+          walletRow.id,
+          remaining,
+          expiryDescription({
+            sourceType: lot.source_type,
+            originalAmount: lot.original_amount,
+            remaining,
+            expiresAt: lot.expires_at,
+          }),
+          `expiry:${lot.id}`,
+          current.balance,
+          lot.id,
+        ]
+      )
+      await client.query(
+        `UPDATE wallet_credit_lots
+         SET status = 'EXPIRED', expired_amount = $2, expired_at = NOW(),
+             expired_tx_id = $3, remaining_amount = 0, updated_at = NOW()
+         WHERE id = $1`,
+        [lot.id, remaining, txRows[0].id]
+      )
+    }
+    return current
+  }
+
+  /**
+   * Expire one wallet's lapsed lots in its own short transaction — used by
+   * the periodic worker and by the balance read path. SKIP LOCKED: a wallet
+   * mid-payment is left for the next pass (or for that payment's own
+   * getForUpdate sweep) instead of blocking behind it.
+   */
+  async expireDueForWallet(walletId) {
+    const client = await getClient()
+    try {
+      await client.query('BEGIN')
+      const { rows } = await client.query(
+        `SELECT * FROM wallets WHERE id = $1 FOR UPDATE SKIP LOCKED`,
+        [walletId]
+      )
+      const swept = rows[0] ? await this._expireDueLots(client, rows[0]) : null
+      await client.query('COMMIT')
+      return swept ? this._formatWallet(swept) : null
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  async hasDueLots(walletId) {
+    const { rows } = await query(
+      `SELECT 1 FROM wallet_credit_lots
+       WHERE wallet_id = $1 AND status = 'ACTIVE' AND expires_at <= NOW() LIMIT 1`,
+      [walletId]
+    )
+    return rows.length > 0
+  }
+
+  /** Wallets that have at least one lapsed lot, for the worker's sweep. */
+  async findWalletsWithDueLots(limit = 200) {
+    const { rows } = await query(
+      `SELECT DISTINCT wallet_id FROM wallet_credit_lots
+       WHERE status = 'ACTIVE' AND expires_at <= NOW()
+       LIMIT $1`,
+      [limit]
+    )
+    return rows.map((r) => r.wallet_id)
+  }
+
+  /** Still-usable credits of a wallet, soonest expiry first. */
+  async getActiveLots(walletId) {
+    const { rows } = await query(
+      `SELECT id, source_type, original_amount, remaining_amount, expires_at, created_at
+       FROM wallet_credit_lots
+       WHERE wallet_id = $1 AND status = 'ACTIVE' AND remaining_amount > 0 AND expires_at > NOW()
+       ORDER BY expires_at ASC, created_at ASC`,
+      [walletId]
+    )
+    return rows.map((r) => ({
+      id: r.id,
+      sourceType: r.source_type,
+      originalAmount: parseFloat(r.original_amount),
+      remainingAmount: parseFloat(r.remaining_amount),
+      expiresAt: r.expires_at,
+      createdAt: r.created_at,
+    }))
+  }
+
+  /** Sum of the wallet's still-usable expiring credits (inside a transaction). */
+  async getExpiringTotal(client, walletId) {
+    const { rows } = await client.query(
+      `SELECT COALESCE(SUM(remaining_amount), 0) AS total FROM wallet_credit_lots
+       WHERE wallet_id = $1 AND status = 'ACTIVE' AND remaining_amount > 0`,
+      [walletId]
+    )
+    return parseFloat(rows[0].total)
+  }
+
+  /**
+   * Worker: atomically claim expiry notifications that haven't been sent.
+   * The UPDATE ... SKIP LOCKED claim means two API processes never both
+   * pick the same lot.
+   */
+  async claimExpiredNotifications(limit = 100) {
+    const { rows } = await query(
+      `UPDATE wallet_credit_lots SET expired_notified_at = NOW()
+       WHERE id IN (
+         SELECT id FROM wallet_credit_lots
+         WHERE status = 'EXPIRED' AND expired_notified_at IS NULL
+         ORDER BY expired_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, user_id, source_type, original_amount, expired_amount, expires_at`,
+      [limit]
+    )
+    return rows
+  }
+
+  /**
+   * Worker: claim "about to expire" reminders. Only lots whose total
+   * validity was longer than the reminder window qualify, so a short-lived
+   * credit doesn't get a "expires soon" nudge the moment it is issued.
+   */
+  async claimExpiryReminders(reminderDays, limit = 100) {
+    if (!(reminderDays > 0)) return []
+    const { rows } = await query(
+      `UPDATE wallet_credit_lots SET reminder_sent_at = NOW()
+       WHERE id IN (
+         SELECT id FROM wallet_credit_lots
+         WHERE status = 'ACTIVE' AND remaining_amount > 0 AND reminder_sent_at IS NULL
+           AND expires_at > NOW()
+           AND expires_at <= NOW() + make_interval(days => $1::int)
+           AND expires_at - created_at > make_interval(days => $1::int)
+         ORDER BY expires_at ASC
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, user_id, source_type, remaining_amount, expires_at`,
+      [reminderDays, limit]
+    )
+    return rows
+  }
+
+  /** Admin: expiry numbers for the wallet overview cards. */
+  async getExpiryStats() {
+    const { rows } = await query(
+      `SELECT
+         COALESCE(SUM(remaining_amount) FILTER (WHERE status = 'ACTIVE' AND expires_at > NOW()), 0) AS expiring_balance,
+         COALESCE(SUM(remaining_amount) FILTER (
+           WHERE status = 'ACTIVE' AND expires_at > NOW() AND expires_at <= NOW() + INTERVAL '7 days'), 0) AS expiring_7d,
+         COALESCE(SUM(expired_amount) FILTER (WHERE status = 'EXPIRED'), 0) AS total_expired,
+         COALESCE(SUM(expired_amount) FILTER (
+           WHERE status = 'EXPIRED' AND expired_at >= NOW() - INTERVAL '30 days'), 0) AS expired_30d
+       FROM wallet_credit_lots`
+    )
+    const r = rows[0]
+    return {
+      expiringBalance: parseFloat(r.expiring_balance),
+      expiringIn7Days: parseFloat(r.expiring_7d),
+      totalExpired: parseFloat(r.total_expired),
+      expiredLast30Days: parseFloat(r.expired_30d),
     }
   }
 }

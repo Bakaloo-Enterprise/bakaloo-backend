@@ -8,6 +8,16 @@ const walletResponseSchema = {
     id: { type: 'string', format: 'uuid' },
     userId: { type: 'string', format: 'uuid' },
     balance: { type: 'number' },
+    // balance = permanentBalance (never expires) + expiringBalance
+    permanentBalance: { type: 'number' },
+    expiringBalance: { type: 'number' },
+    nextExpiry: {
+      type: ['object', 'null'],
+      properties: {
+        amount: { type: 'number' },
+        expiresAt: { type: 'string' },
+      },
+    },
     createdAt: { type: 'string' },
   },
 }
@@ -24,6 +34,8 @@ const transactionResponseSchema = {
     referenceId: { type: ['string', 'null'] },
     balanceAfter: { type: ['number', 'null'] },
     status: { type: 'string', enum: ['PENDING', 'COMPLETED', 'FAILED'] },
+    // Set on expiring credits; null for ordinary money.
+    expiresAt: { type: ['string', 'null'] },
     createdAt: { type: 'string' },
   },
 }
@@ -269,8 +281,12 @@ export const adminCreditSchema = {
     required: ['amount'],
     properties: {
       amount: { type: 'number', minimum: 1 },
-      description: { type: 'string', maxLength: 255, default: 'Admin credit' },
+      description: { type: 'string', maxLength: 255 },
       referenceId: { type: 'string', maxLength: 100 },
+      // true = promotional credit that expires (Settings → Wallet → Expiry);
+      // false/omitted = plain money that never expires.
+      isBonus: { type: 'boolean', default: false },
+      expiryDays: { type: 'integer', minimum: 1, maximum: 3650 },
     },
   },
   response: {

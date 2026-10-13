@@ -242,6 +242,7 @@ export class ScratchCardService {
           description: 'Scratch Card prize',
           subType: 'SCRATCH',
           sourceId: historyId,
+          expirySource: 'SCRATCH',
         })
         if (result.success) {
           return { rewardStatus: 'ISSUED', rewardRef: result.transaction?.id ?? null }

@@ -31,6 +31,12 @@ export default async function walletRoutes(fastify) {
     preHandler: [fastify.authenticate],
   }, controller.getWallet.bind(controller))
 
+  // GET /expiry — Expiring credits and their expiry dates
+  fastify.get('/expiry', {
+    schema: { tags: ['Wallet'], summary: 'Get expiring wallet credits' },
+    preHandler: [fastify.authenticate],
+  }, controller.getExpiry.bind(controller))
+
   // GET /transactions — Transaction history
   fastify.get('/transactions', {
     schema: getTransactionsSchema,

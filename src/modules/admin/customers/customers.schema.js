@@ -67,7 +67,10 @@ export const creditWalletSchema = {
     required: ['amount'],
     properties: {
       amount: { type: 'number', minimum: 1, maximum: 50000 },
-      description: { type: 'string', maxLength: 255, default: 'Admin credit' },
+      description: { type: 'string', maxLength: 255 },
+      // true = expiring promotional credit; omitted/false = plain money.
+      isBonus: { type: 'boolean', default: false },
+      expiryDays: { type: 'integer', minimum: 1, maximum: 3650 },
     },
   },
 }

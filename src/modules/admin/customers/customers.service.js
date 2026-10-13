@@ -5,6 +5,7 @@ import { NotificationsRepository } from '../../notifications/notifications.repos
 import { NotificationsService } from '../../notifications/notifications.service.js'
 import { logAdminActivity } from '../../../utils/activityLogger.js'
 import { ADDRESS_RETENTION_DAYS } from '../../addresses/addresses.service.js'
+import { formatDateIst } from '../../wallet/wallet-lots.js'
 import ExcelJS from 'exceljs'
 
 const repo = new AdminCustomersRepository()
@@ -69,15 +70,18 @@ export class AdminCustomersService {
     return repo.getVIP(minOrders)
   }
 
-  async creditWallet(userId, amount, description, adminId, ip) {
-    const result = await walletService.addMoney(userId, { amount, description })
+  async creditWallet(userId, amount, description, adminId, ip, { isBonus = false, expiryDays } = {}) {
+    // Bonus credits expire per Settings → Wallet → Expiry; plain credits don't.
+    const result = await walletService.adminCredit(userId, { amount, description, isBonus, expiryDays })
     if (result.success) {
-      logAdminActivity(adminId, 'CREDIT_WALLET', 'user', userId, null, { amount, description }, ip)
+      logAdminActivity(adminId, 'CREDIT_WALLET', 'user', userId, null, { amount, description, isBonus, expiryDays }, ip)
       try {
         const notifService = new NotificationsService(new NotificationsRepository(), null)
+        const expiresAt = result.transaction?.expiresAt
+        const validity = expiresAt ? ` Use it before ${formatDateIst(expiresAt)}.` : ''
         await notifService.sendNotification(userId, {
           title: '💰 Wallet credited',
-          body: `₹${amount} has been added to your wallet${description ? ` — ${description}` : ''}.`,
+          body: `₹${amount} has been added to your wallet${description ? ` — ${description}` : ''}.${validity}`,
           type: 'WALLET',
           data: { type: 'WALLET', amount, description: description || '' },
         })

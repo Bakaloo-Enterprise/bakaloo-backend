@@ -288,6 +288,7 @@ export class SpinWheelService {
           description: 'Spin & Win prize',
           subType: 'SCRATCH',
           sourceId: historyId,
+          expirySource: 'SPIN',
         })
         if (result.success) {
           return { rewardStatus: 'ISSUED', rewardRef: result.transaction?.id ?? null }

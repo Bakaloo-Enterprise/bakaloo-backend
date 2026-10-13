@@ -17,6 +17,14 @@ export class WalletController {
   }
 
   /**
+   * Get the customer's expiring credits and when each expires
+   */
+  async getExpiry(request, reply) {
+    const data = await this.service.getExpiryDetails(request.user.id)
+    return reply.send(success(data, 'Wallet expiry fetched'))
+  }
+
+  /**
    * Get wallet transactions
    */
   async getTransactions(request, reply) {

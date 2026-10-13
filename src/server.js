@@ -22,6 +22,7 @@ import {
   startWalletTopupReconciliationWorker,
   stopWalletTopupReconciliationWorker,
 } from './workers/wallet-topup-reconciliation.worker.js'
+import { startWalletExpiryWorker, stopWalletExpiryWorker } from './workers/wallet-expiry.worker.js'
 
 const start = async () => {
   try {
@@ -86,6 +87,9 @@ const start = async () => {
     // captured but the app never confirmed back to us)
     startWalletTopupReconciliationWorker()
 
+    // Expire lapsed bonus/cashback wallet credits and notify customers
+    startWalletExpiryWorker()
+
     // PM2 ready signal
     if (process.send) {
       process.send('ready')
@@ -112,6 +116,7 @@ const start = async () => {
 
       // Stop wallet top-up reconciliation worker
       stopWalletTopupReconciliationWorker()
+      stopWalletExpiryWorker()
 
       // Close Socket.IO
       if (app.io) {
