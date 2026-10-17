@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 /**
  * Profit, stock value and month closing, against a real database (opt-in):
- *   MONEY_DB_TEST=1 npx vitest run tests/integration/valuation.db.test.js
+ *   MONEY_DB_TEST=1 npx vitest run --no-file-parallelism tests/integration/valuation.db.test.js
  * One story, told through the real services, with every figure worked out by hand:
  *   buy 20 @30 (2 thrown away at the door) and 10 @36; send 10+10 to store A (average cost 33);
  *   sell 5 to a home customer at 50 and 3 to a business at the agreed 40; 2 damaged on the shelf;
@@ -138,7 +138,7 @@ d('profit, stock value and month closing (real DB)', () => {
       await q(`UPDATE stock_movements SET created_at = created_at - ${back} WHERE shop_product_id IN (SELECT id FROM shop_products WHERE product_id = $1)`, [S.p])
       await q(`UPDATE procurement_entries SET created_at = created_at - ${back}, procured_on = procured_on - 40, received_at = received_at - ${back} WHERE product_id = $1`, [S.p])
       const entries = `SELECT id FROM procurement_entries WHERE product_id = $1`
-      await q(`UPDATE procurement_allocations SET created_at = created_at - ${back} WHERE entry_id IN (${entries})`, [S.p])
+      await q(`UPDATE procurement_allocations SET created_at = created_at - ${back}, applied_at = applied_at - ${back} WHERE entry_id IN (${entries})`, [S.p])
       await q(`UPDATE procurement_adjustments SET created_at = created_at - ${back} WHERE entry_id IN (${entries})`, [S.p])
       await q(`UPDATE procurement_events SET created_at = created_at - ${back} WHERE entry_id IN (${entries})`, [S.p])
       await q(`UPDATE b2b_reservations SET created_at = created_at - ${back}, closed_at = closed_at - ${back} WHERE product_id = $1`, [S.p])

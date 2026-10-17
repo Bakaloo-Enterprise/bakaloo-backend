@@ -23,17 +23,19 @@ const ENTRY_SELECT = `
   to_char(e.procured_on, 'YYYY-MM-DD') AS procured_on, e.invoice_ref, e.receiving_note, e.destination_shop_id, e.purpose, e.business_account_id, e.reservation_note,
   e.status, e.created_by, e.created_at, e.owed_qty, e.received_at,
   (SELECT COUNT(*) FROM procurement_documents d WHERE d.entry_id = e.id AND d.kind = 'INVOICE')::int AS invoice_count,
-  p.name AS product_name, p.sku AS product_sku, v.name AS vendor_name, ds.name AS destination_name, b.company_name AS business_name,
-  COALESCE(al.qty, 0)::int AS allocated, COALESCE(ca.qty, 0)::int AS central_adjusted, COALESCE(rv.qty, 0)::int AS reserved`
+  p.name AS product_name, p.sku AS product_sku, p.pack_size, p.pack_unit, p.product_family_id, v.name AS vendor_name, ds.name AS destination_name, b.company_name AS business_name,
+  COALESCE(al.qty, 0)::int AS allocated, COALESCE(tr.qty, 0)::int AS in_transit, COALESCE(ca.qty, 0)::int AS central_adjusted, COALESCE(rv.qty, 0)::int AS reserved, COALESCE(cv.qty, 0)::int AS converted`
 const ENTRY_FROM = `
   FROM procurement_entries e
   JOIN products p ON p.id = e.product_id
   JOIN vendors v ON v.id = e.vendor_id
   LEFT JOIN shops ds ON ds.id = e.destination_shop_id
   LEFT JOIN business_accounts b ON b.id = e.business_account_id
-  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_allocations WHERE entry_id = e.id AND status = 'APPLIED') al ON TRUE
+  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_allocations WHERE entry_id = e.id AND status IN ('APPLIED','IN_TRANSIT')) al ON TRUE
+  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_allocations WHERE entry_id = e.id AND status = 'IN_TRANSIT') tr ON TRUE
   LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_adjustments WHERE entry_id = e.id AND shop_id IS NULL) ca ON TRUE
-  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM b2b_reservations WHERE entry_id = e.id AND status = 'RESERVED') rv ON TRUE`
+  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM b2b_reservations WHERE entry_id = e.id AND status = 'RESERVED') rv ON TRUE
+  LEFT JOIN LATERAL (SELECT SUM(units_used) AS qty FROM procurement_conversions WHERE entry_id = e.id AND status = 'APPLIED') cv ON TRUE`
 
 export class ProcurementRepository {
   stock = new ShopProductsRepository()
@@ -123,6 +125,56 @@ export class ProcurementRepository {
   }
   async voidPayment(client, id, { actorId, reason }) {
     await client.query(`UPDATE vendor_payments SET voided_at = NOW(), voided_by = $2, void_reason = $3 WHERE id = $1`, [id, actorId, reason])
+  }
+
+  // ─── repacking bulk stock into pack sizes ───
+  async setPackSize(productId, { size, unit }) {
+    const { rows } = await query(`UPDATE products SET pack_size = $2, pack_unit = $3, updated_at = NOW() WHERE id = $1 RETURNING id, name, pack_size, pack_unit`, [productId, size, unit])
+    return rows[0] ?? null
+  }
+  /** The other pack sizes of the same product family (e.g. Potato 500 g, Potato 1 kg), with the size each one holds. */
+  async familyPacks(productId, familyId) {
+    const { rows } = await query(
+      `SELECT id, name, option_label, thumbnail_url, net_quantity, pack_size, pack_unit FROM products
+        WHERE product_family_id = $2 AND id <> $1 AND is_active = true ORDER BY pack_size NULLS LAST, name`, [productId, familyId])
+    return rows
+  }
+  async packProducts(ids, client) {
+    const { rows } = await (client ?? { query }).query(`SELECT id, name, product_family_id, pack_size, pack_unit, is_active FROM products WHERE id = ANY($1::uuid[])`, [ids])
+    return rows
+  }
+  async insertConversion(client, { entryId, unitsUsed, unitSize, gramsUsed, gramsPacked, gramsLost, note, actorId }) {
+    const { rows } = await client.query(
+      `INSERT INTO procurement_conversions (entry_id, units_used, unit_size, grams_used, grams_packed, grams_lost, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [entryId, unitsUsed, unitSize, gramsUsed, gramsPacked, gramsLost, note ?? null, actorId])
+    return rows[0].id
+  }
+  async insertConversionLine(client, { conversionId, shopId, productId, shopProductId, packs, packSize, unitCost, movementId }) {
+    await client.query(
+      `INSERT INTO procurement_conversion_lines (conversion_id, shop_id, product_id, shop_product_id, packs, pack_size, unit_cost, movement_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [conversionId, shopId, productId, shopProductId, packs, packSize, unitCost, movementId])
+  }
+  async conversions(entryId) {
+    const { rows } = await query(
+      `SELECT c.id, c.units_used, c.unit_size, c.grams_used, c.grams_packed, c.grams_lost, c.status, c.note, c.created_at, c.reversed_at, u.name AS actor_name,
+              COALESCE((SELECT jsonb_agg(jsonb_build_object('shopName', s.name, 'productName', p.name, 'packs', l.packs, 'packSize', l.pack_size, 'unitCost', l.unit_cost::float) ORDER BY s.name, p.name)
+                          FROM procurement_conversion_lines l JOIN shops s ON s.id = l.shop_id JOIN products p ON p.id = l.product_id WHERE l.conversion_id = c.id), '[]'::jsonb) AS lines
+         FROM procurement_conversions c LEFT JOIN users u ON u.id = c.created_by WHERE c.entry_id = $1 ORDER BY c.created_at`, [entryId])
+    return rows
+  }
+  async conversionForUpdate(client, id) {
+    const { rows } = await client.query(`SELECT id, entry_id, status FROM procurement_conversions WHERE id = $1 FOR UPDATE`, [id])
+    return rows[0] ?? null
+  }
+  async conversionLines(client, conversionId) {
+    const { rows } = await client.query(`SELECT l.id, l.shop_id, l.shop_product_id, l.packs, l.product_id, p.name AS product_name FROM procurement_conversion_lines l JOIN products p ON p.id = l.product_id WHERE l.conversion_id = $1`, [conversionId])
+    return rows
+  }
+  async markConversionReversed(client, id, actorId) {
+    await client.query(`UPDATE procurement_conversions SET status = 'REVERSED', reversed_by = $2, reversed_at = NOW() WHERE id = $1`, [id, actorId])
+  }
+  async setLineReversal(client, lineId, movementId) {
+    await client.query(`UPDATE procurement_conversion_lines SET reversal_movement_id = $2 WHERE id = $1`, [lineId, movementId])
   }
 
   // ─── documents ───
@@ -239,11 +291,29 @@ export class ProcurementRepository {
   applyStock(client, args) {
     return this.stock.applyStockChange(client, { ...args, source: 'DASHBOARD' })
   }
-  async insertAllocation(client, { entryId, shopId, shopProductId, quantity, movementId, note, actorId }) {
+  async insertAllocation(client, { entryId, shopId, shopProductId, quantity, movementId, note, actorId, inTransit = false }) {
     const { rows } = await client.query(
-      `INSERT INTO procurement_allocations (entry_id, shop_id, shop_product_id, quantity, movement_id, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [entryId, shopId, shopProductId, quantity, movementId, note ?? null, actorId])
+      `INSERT INTO procurement_allocations (entry_id, shop_id, shop_product_id, quantity, movement_id, note, created_by, status, applied_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::varchar, CASE WHEN $8::varchar = 'APPLIED' THEN NOW() END) RETURNING id`, [entryId, shopId, shopProductId, quantity, movementId, note ?? null, actorId, inTransit ? 'IN_TRANSIT' : 'APPLIED'])
     return rows[0].id
+  }
+  /** Transfers sent "on the way", oldest first, for the Arrived / Cancel list. */
+  async transitList() {
+    const { rows } = await query(
+      `SELECT a.id, a.quantity, a.created_at, a.note, e.id AS entry_id, e.entry_no, p.name AS product_name, v.name AS vendor_name, s.name AS shop_name, u.name AS actor_name
+         FROM procurement_allocations a JOIN procurement_entries e ON e.id = a.entry_id JOIN products p ON p.id = e.product_id JOIN vendors v ON v.id = e.vendor_id
+         JOIN shops s ON s.id = a.shop_id LEFT JOIN users u ON u.id = a.created_by WHERE a.status = 'IN_TRANSIT' ORDER BY a.created_at`)
+    return rows
+  }
+  async allocationFull(client, id) {
+    const { rows } = await client.query(`SELECT a.id, a.entry_id, a.shop_id, a.shop_product_id, a.quantity, a.status, s.name AS shop_name FROM procurement_allocations a JOIN shops s ON s.id = a.shop_id WHERE a.id = $1 FOR UPDATE OF a`, [id])
+    return rows[0] ?? null
+  }
+  async markTransferReceived(client, id, { quantity, movementId, userId }) {
+    await client.query(`UPDATE procurement_allocations SET status = 'APPLIED', quantity = $2, movement_id = $3, applied_at = NOW(), received_by = $4 WHERE id = $1`, [id, quantity, movementId, userId])
+  }
+  async markCancelled(client, id, userId) {
+    await client.query(`UPDATE procurement_allocations SET status = 'CANCELLED', reversed_by = $2, reversed_at = NOW() WHERE id = $1`, [id, userId])
   }
   async allocation(client, id) {
     const { rows } = await client.query(`SELECT id, entry_id, shop_id, shop_product_id, quantity, status FROM procurement_allocations WHERE id = $1 FOR UPDATE`, [id])
@@ -273,8 +343,9 @@ export class ProcurementRepository {
     const { rows } = await client.query(
       `SELECT (SELECT COUNT(*) FROM procurement_allocations WHERE entry_id = $1)::int AS allocation_count,
               (SELECT COUNT(*) FROM procurement_adjustments WHERE entry_id = $1)::int AS adjustment_count,
-              (SELECT COUNT(*) FROM b2b_reservations WHERE entry_id = $1 AND status = 'RESERVED')::int AS reservation_count`, [entryId])
-    return { allocationCount: rows[0].allocation_count, adjustmentCount: rows[0].adjustment_count, reservationCount: rows[0].reservation_count }
+              (SELECT COUNT(*) FROM b2b_reservations WHERE entry_id = $1 AND status = 'RESERVED')::int AS reservation_count,
+              (SELECT COUNT(*) FROM procurement_conversions WHERE entry_id = $1 AND status = 'APPLIED')::int AS conversion_count`, [entryId])
+    return { allocationCount: rows[0].allocation_count, adjustmentCount: rows[0].adjustment_count, reservationCount: rows[0].reservation_count, conversionCount: rows[0].conversion_count }
   }
   async markReceived(client, id, { receivedQty, damagedQty, owedQty, note, userId }) {
     await client.query(

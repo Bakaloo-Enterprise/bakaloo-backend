@@ -41,7 +41,7 @@ export class DistributionService {
   }
 
   /** Apply a confirmed plan: reserve for customers, then send to stores. Nothing is applied if any part is wrong. */
-  async distribute(entryId, { reservations = [], allocations = [], note }, actor) {
+  async distribute(entryId, { reservations = [], allocations = [], note, inTransit = false }, actor) {
     const reqIds = [...new Set(reservations.map((r) => r.requirementId))]
     if (reservations.length === 0 && allocations.length === 0) throw new BusinessError('Choose where the stock should go.', 400, 'VALIDATION', { plan: 'Empty' })
     if (reservations.some((r) => !whole(r.quantity))) throw new BusinessError('Quantities must be whole numbers of at least 1.', 400, 'VALIDATION', { reservations: 'Invalid' })
@@ -75,9 +75,9 @@ export class DistributionService {
       if (allocations.length === 0) return { shopIds: [], productId: e.product_id }
       // Re-read so the stores' share is checked against what is free AFTER the new holds.
       const fresh = await this.procRepo.entry(entryId, client)
-      return this.procurement.applySplit(client, fresh, allocations, { note, updateCostPrice: true }, actor)
+      return this.procurement.applySplit(client, fresh, allocations, { note, updateCostPrice: true, inTransit }, actor)
     })
-    if (touched.shopIds.length) await invalidateCatalogCaches({ shopIds: touched.shopIds, productIds: [touched.productId] })
+    if (touched.shopIds.length && !inTransit) await invalidateCatalogCaches({ shopIds: touched.shopIds, productIds: [touched.productId] })
     return this.procurement.detail(entryId)
   }
 

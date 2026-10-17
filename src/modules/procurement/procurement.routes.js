@@ -8,6 +8,7 @@ import { SuppliersService } from './suppliers.service.js'
 import { error } from '../../utils/apiResponse.js'
 import { DistributionRepository } from './distribution.repository.js'
 import { DistributionService } from './distribution.service.js'
+import { ConversionService } from './conversion.service.js'
 import { PeriodsRepository } from './periods.repository.js'
 import { PeriodsService } from './periods.service.js'
 import { ValuationRepository } from './valuation.repository.js'
@@ -26,6 +27,7 @@ import * as S from './procurement.schema.js'
 export default async function procurementRoutes(fastify) {
   const procRepo = new ProcurementRepository()
   const service = new ProcurementService({ repo: procRepo })
+  const conversion = new ConversionService({ procRepo, procurement: service })
   const distribution = new DistributionService({ repo: new DistributionRepository(), procurement: service, procRepo })
   const suppliers = new SuppliersService({ repo: new ProcurementRepository(), procurement: service })
   const periodsRepo = new PeriodsRepository()
@@ -74,6 +76,9 @@ export default async function procurementRoutes(fastify) {
   route('post', '/entries/:id/reserve', MANAGE, S.reserveSchema, 'Stock reserved for B2B', (r) => service.reserve(r.params.id, r.body, actor(r)))
   route('post', '/entries/:id/release', MANAGE, S.idSchema, 'Reservation released', (r) => service.release(r.params.id, actor(r)))
   route('post', '/entries/:id/cancel', MANAGE, S.idSchema, 'Purchase cancelled', (r) => service.cancel(r.params.id, actor(r)))
+  route('get', '/transfers', VIEW, {}, 'Transfers fetched', () => service.transfers())
+  route('post', '/transfers/:id/receive', MANAGE, S.receiveTransferSchema, 'Transfer received', (r) => service.receiveTransfer(r.params.id, r.body, actor(r)))
+  route('post', '/transfers/:id/cancel', MANAGE, S.idSchema, 'Transfer cancelled', (r) => service.cancelTransfer(r.params.id, actor(r)))
   route('post', '/allocations/:id/reverse', MANAGE, S.idSchema, 'Allocation reversed', (r) => service.reverseAllocation(r.params.id, actor(r)))
 
   route('get', '/reports/vendors', VIEW, S.vendorReportSchema, 'Vendor report fetched', (r) => service.vendorReport(r.query))
@@ -99,6 +104,12 @@ export default async function procurementRoutes(fastify) {
   route('get', '/entries/:id/distribution', VIEW, S.idSchema, 'Plan suggested', (r) => distribution.preview(r.params.id))
   route('post', '/entries/:id/distribute', MANAGE, S.distributeSchema, 'Stock distributed', (r) => distribution.distribute(r.params.id, r.body, actor(r)))
   route('post', '/reservations/:id/release', MANAGE, S.idSchema, 'Hold released', (r) => distribution.releaseReservation(r.params.id, actor(r)))
+
+  // Repacking bulk stock into pack sizes (500 g, 1 kg…).
+  route('get', '/entries/:id/repack', VIEW, S.idSchema, 'Repack options fetched', (r) => conversion.preview(r.params.id))
+  route('post', '/entries/:id/repack', MANAGE, S.repackSchema, 'Packs made', (r) => conversion.convert(r.params.id, r.body, actor(r)))
+  route('post', '/conversions/:id/reverse', MANAGE, S.idSchema, 'Repack undone', (r) => conversion.reverse(r.params.id, actor(r)))
+  route('patch', '/products/:id/pack-size', MANAGE, S.packSizeSchema, 'Pack size saved', (r) => conversion.setPackSize(r.params.id, r.body))
 
   // B2B requirements (WhatsApp / call / walk-in requests) and the purchase plan built from them.
   route('get', '/plan', VIEW, {}, 'Purchase plan fetched', () => reqs.plan())

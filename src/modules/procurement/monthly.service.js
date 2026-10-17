@@ -174,7 +174,7 @@ export class MonthlyService {
       { header: 'Margin %', key: 'marginPct', width: 10 }, { header: 'Wastage and loss', key: 'loss', fmt: INR }, { header: 'Stock at end', key: 'closingValue', fmt: INR },
     ], d.valuation.byShop, { totals: ['openingValue', 'sales', 'cogs', 'gross', 'loss', 'closingValue'] })
     sheet('Warehouse stock', [
-      { header: 'Purchase no.', key: 'entryNo', width: 12 }, { header: 'Product', key: 'product', width: 32 }, { header: 'Supplier', key: 'vendor', width: 26 }, { header: 'Units in warehouse', key: 'units', width: 16 }, { header: 'Price each', key: 'price', fmt: INR }, { header: 'Value', key: 'value', fmt: INR },
+      { header: 'Purchase no.', key: 'entryNo', width: 12 }, { header: 'Product', key: 'product', width: 32 }, { header: 'Supplier', key: 'vendor', width: 26 }, { header: 'Units in warehouse (incl. on the way)', key: 'units', width: 20 }, { header: 'of which on the way to stores', key: 'inTransit', width: 18 }, { header: 'Price each', key: 'price', fmt: INR }, { header: 'Value', key: 'value', fmt: INR },
     ], d.valuation.warehouseRows, { totals: ['units', 'value'] })
     sheet('Purchases', [
       { header: 'No.', key: 'entryNo', width: 8 }, { header: 'Date', key: 'date', width: 12 }, { header: 'Supplier', key: 'vendor', width: 24 }, { header: 'Product', key: 'product', width: 28 },

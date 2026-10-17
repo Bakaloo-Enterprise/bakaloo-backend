@@ -18,6 +18,7 @@ export class RequirementsService {
       id: r.id, reqNo: Number(r.req_no), customerName: r.customer_name, customerPhone: r.customer_phone,
       business: r.business_account_id ? { id: r.business_account_id, name: r.business_name } : null,
       conversationId: r.wa_conversation_id, source: r.source, sourceLabel: SOURCES[r.source]?.label ?? r.source, status: r.status,
+      order: r.order_id ? { id: r.order_id, number: r.order_number } : null,
       deliveryDate: r.delivery_date, paymentTerms: r.payment_terms, note: r.note, createdAt: r.created_at, createdBy: r.created_by_name,
       items: items.map((i) => ({ productId: i.product_id, name: i.product_name, unit: i.unit, imageUrl: i.image_url, quantity: i.quantity, unitPrice: i.unit_price === null ? null : Number(i.unit_price), held: held.find((h) => h.product_id === i.product_id)?.qty ?? 0 })),
     }

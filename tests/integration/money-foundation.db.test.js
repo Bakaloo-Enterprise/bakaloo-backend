@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 /**
  * Phase 1 foundation, against a real database (opt-in, like the WhatsApp CRM DB suites):
- *   MONEY_DB_TEST=1 npx vitest run tests/integration/money-foundation.db.test.js
+ *   MONEY_DB_TEST=1 npx vitest run --no-file-parallelism tests/integration/money-foundation.db.test.js
  * Needs the isolated local DB (see memory: local-crm-test-environment) with all migrations applied.
  */
 const RUN = process.env.MONEY_DB_TEST === '1'
@@ -33,6 +33,12 @@ d('money foundation (real DB)', () => {
     if (!RUN) return
     // Find this suite's orders FIRST (their lines are about to be deleted), then remove everything that points at them.
     const orderIds = (await query(`SELECT id FROM orders WHERE order_number LIKE 'ZZMF-%' OR shop_id = ANY($1::uuid[]) OR id IN (SELECT order_id FROM order_items WHERE product_id = $2)`, [[ids.A, ids.B], ids.p])).rows.map((r) => r.id)
+    // requests this suite made (and any it turned into orders) go first: they point at the orders and products below
+    const reqIds = (await query(`SELECT id FROM b2b_requirements WHERE id = ANY($1::uuid[]) OR order_id = ANY($2::uuid[]) OR customer_name LIKE $3`, [ids.reqs ?? [], orderIds, `${tag}%`])).rows.map((r) => r.id)
+    await query(`DELETE FROM b2b_reservations WHERE requirement_id = ANY($1::uuid[])`, [reqIds])
+    await query(`DELETE FROM b2b_requirement_events WHERE requirement_id = ANY($1::uuid[])`, [reqIds])
+    await query(`DELETE FROM b2b_requirement_items WHERE requirement_id = ANY($1::uuid[])`, [reqIds])
+    await query(`DELETE FROM b2b_requirements WHERE id = ANY($1::uuid[])`, [reqIds])
     await query(`DELETE FROM order_b2b_settlements WHERE order_id = ANY($1::uuid[])`, [orderIds])
     await query(`DELETE FROM order_status_history WHERE order_id = ANY($1::uuid[])`, [orderIds])
     await query(`DELETE FROM stock_movements WHERE shop_product_id IN (SELECT id FROM shop_products WHERE product_id = $1)`, [ids.p])
@@ -136,6 +142,33 @@ d('money foundation (real DB)', () => {
       const before = await stock(ids.A)
       await expect(svc.createManualOrder({ userId: ids.biz, shopId: ids.A, orderType: 'B2B', advance: { amount: 500, method: 'CASH' }, items: [{ productId: ids.p, quantity: 1, unitPrice: 20 }], deliveryAddress: { city: 'K' } }, ids.admin, 'ip')).rejects.toMatchObject({ statusCode: 400 })
       expect(await stock(ids.A)).toBe(before)
+    })
+
+    it('turns a customer request into the order, in one step', async () => {
+      const mk = async (qty) => (await query(`INSERT INTO b2b_requirements (customer_name, customer_phone, source, status, payment_terms) VALUES ($1,$2,'PHONE_CALL','CONFIRMED','CREDIT') RETURNING id`, [`${tag} biryani`, ids.phones[0]])).rows[0].id
+      const rid = await mk()
+      await query(`INSERT INTO b2b_requirement_items (requirement_id, product_id, quantity) VALUES ($1,$2,2)`, [rid, ids.p])
+      const order = await svc.createManualOrder({ userId: ids.biz, shopId: ids.A, orderType: 'B2B', requirementId: rid, items: [{ productId: ids.p, quantity: 2, unitPrice: 20 }], deliveryAddress: { city: 'K' } }, ids.admin, 'ip')
+      expect((await query(`SELECT status, order_id FROM b2b_requirements WHERE id = $1`, [rid])).rows[0]).toEqual({ status: 'DELIVERED', order_id: order.id })
+      expect((await query(`SELECT kind FROM b2b_requirement_events WHERE requirement_id = $1`, [rid])).rows.map((r) => r.kind)).toContain('ORDER_MADE')
+      // the same request cannot be used twice, and a failed order leaves the request untouched
+      await expect(svc.createManualOrder({ userId: ids.biz, shopId: ids.A, orderType: 'B2B', requirementId: rid, items: [{ productId: ids.p, quantity: 1, unitPrice: 20 }], deliveryAddress: { city: 'K' } }, ids.admin, 'ip')).rejects.toMatchObject({ code: 'REQUIREMENT_NOT_CONFIRMED' })
+      const rid2 = await mk()
+      const before = await stock(ids.A)
+      await expect(svc.createManualOrder({ userId: ids.biz, shopId: ids.B, orderType: 'B2B', requirementId: rid2, items: [{ productId: ids.p, quantity: 5, unitPrice: 20 }], deliveryAddress: { city: 'K' } }, ids.admin, 'ip')).rejects.toMatchObject({ statusCode: 400 })
+      expect((await query(`SELECT status, order_id FROM b2b_requirements WHERE id = $1`, [rid2])).rows[0]).toEqual({ status: 'CONFIRMED', order_id: null })
+      expect(await stock(ids.A)).toBe(before)
+      // a request with stock held for it is delivered with "Delivered", not turned into an order
+      const rid3 = await mk()
+      await query(`INSERT INTO b2b_requirement_items (requirement_id, product_id, quantity) VALUES ($1,$2,1)`, [rid3, ids.p])
+      const vend = (await query(`INSERT INTO vendors (name) VALUES ($1) RETURNING id`, [`${tag} hold vendor`])).rows[0]
+      const entry = (await query(`INSERT INTO procurement_entries (product_id, vendor_id, expected_qty, received_qty, unit_price, purchase_total, procured_on, status, received_at) VALUES ($1,$2,5,5,10,50,CURRENT_DATE,'ACTIVE',NOW()) RETURNING id`, [ids.p, vend.id])).rows[0]
+      if (entry) {
+        await query(`INSERT INTO b2b_reservations (requirement_id, product_id, entry_id, quantity) VALUES ($1,$2,$3,1)`, [rid3, ids.p, entry.id])
+        await expect(svc.createManualOrder({ userId: ids.biz, shopId: ids.A, orderType: 'B2B', requirementId: rid3, items: [{ productId: ids.p, quantity: 1, unitPrice: 20 }], deliveryAddress: { city: 'K' } }, ids.admin, 'ip')).rejects.toMatchObject({ code: 'REQUIREMENT_HAS_HOLDS' })
+        await query(`DELETE FROM b2b_reservations WHERE entry_id = $1`, [entry.id]); await query(`DELETE FROM procurement_entries WHERE id = $1`, [entry.id]); await query(`DELETE FROM vendors WHERE name = $1`, [`${tag} hold vendor`])
+      }
+      ids.reqs = [rid, rid2, rid3]
     })
   })
 })

@@ -539,7 +539,7 @@ export class AdminOrdersRepository {
    * order line remembering which store product it came from so a cancellation puts the stock back.
    * Payment: COD stays PENDING until delivery; MANUAL is PAID only when the admin says the money is already in hand.
    */
-  async createManualOrder({ userId, items, paymentMethod, paymentReceived, deliveryAddress, adminId, shopId, orderType = 'B2C', dueDate, advance }) {
+  async createManualOrder({ userId, items, paymentMethod, paymentReceived, deliveryAddress, adminId, shopId, orderType = 'B2C', dueDate, advance, requirementId }) {
     const isB2B = orderType === 'B2B'
     const method = isB2B ? 'B2B_CREDIT' : paymentMethod || 'MANUAL'
     const client = await getClient()
@@ -604,6 +604,17 @@ export class AdminOrdersRepository {
       )
       if (adv) {
         await client.query(`INSERT INTO order_b2b_settlements (order_id, method, amount, note, recorded_by) VALUES ($1, $2, $3, 'Received when the order was taken', $4)`, [order.id, adv.method, adv.amount, adminId])
+      }
+
+      if (requirementId) {
+        if (!isB2B) throw { statusCode: 400, message: 'A customer request becomes a Business order.' }
+        const { rows: [rq] } = await client.query(`SELECT id, status, req_no FROM b2b_requirements WHERE id = $1 FOR UPDATE`, [requirementId])
+        if (!rq) throw { statusCode: 404, message: 'That customer request no longer exists.' }
+        if (rq.status !== 'CONFIRMED') throw { statusCode: 409, message: `Request #${rq.req_no} is not marked “Sure” any more, so it cannot become an order.`, code: 'REQUIREMENT_NOT_CONFIRMED' }
+        const { rows: held } = await client.query(`SELECT 1 FROM b2b_reservations WHERE requirement_id = $1 AND status = 'RESERVED' LIMIT 1`, [requirementId])
+        if (held.length) throw { statusCode: 409, message: `Request #${rq.req_no} has stock held for it in the warehouse. Use “Delivered” on the request instead — that uses the held stock.`, code: 'REQUIREMENT_HAS_HOLDS' }
+        await client.query(`UPDATE b2b_requirements SET status = 'DELIVERED', order_id = $2, updated_at = NOW() WHERE id = $1`, [requirementId, order.id])
+        await client.query(`INSERT INTO b2b_requirement_events (requirement_id, actor_id, kind, detail) VALUES ($1,$2,'ORDER_MADE',$3)`, [requirementId, adminId, JSON.stringify({ orderNumber: order.order_number })])
       }
 
       for (const l of lines) {

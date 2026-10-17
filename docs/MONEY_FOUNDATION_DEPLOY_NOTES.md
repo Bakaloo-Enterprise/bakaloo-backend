@@ -97,3 +97,30 @@ at the time of the return (not the original cost).
 
 ## Run before relying on a number
 `MONEY_DB_TEST=1 npx vitest run tests/integration/valuation.db.test.js tests/integration/money-foundation.db.test.js` (19 tests, real database).
+
+---
+
+# Packs, request → order, store transfers (migrations 166, 167, 168)
+
+All three are additive. Deploy order for everything not yet on the server: **165 → 166 → 167 → 168** (after 159–164).
+
+## 166 — weight-based stock / repacking
+* `products.pack_size` + `pack_unit` (G or ML). The migration fills them from `net_quantity` where it reads like "500 g", "1 kg", "250ml",
+  "1.5 L" (multi-packs such as "2 x 500 g" are left empty). Staff can fix any product from the Make-packs screen.
+* A repack uses whole units of a bulk purchase and makes packs of the **same product family** (never the bulk product itself), landing on one
+  store's shelf. Grams in = grams out + a recorded loss; pack cost = cost per gram × pack weight. Undo is possible only while every pack is unsold.
+* Only the **pre-packed** mode is built. Selling 500 g and 1 kg from one shared loose stock is not.
+
+## 167 — a customer request becomes an order
+* `b2b_requirements.order_id`. "Make order" on a "Sure" request opens Create Order filled in; placing the order marks the request Delivered
+  **in the same transaction**. A request that has stock held for it in the warehouse is delivered with "Delivered" instead (that uses the held stock).
+
+## 168 — store transfers "on the way"
+* `procurement_allocations` gets status `IN_TRANSIT` / `CANCELLED`, `applied_at`, `received_by`. Existing rows: `applied_at = created_at`.
+* Sending "on the way" takes the units out of the purchase's free stock but not onto the shelf; the store confirms what arrived
+  (fewer = the rest is written off as lost on the way); a transfer that never left can be cancelled.
+* Goods on the way still count as ours in stock value (shown separately); the warehouse-to-shelf check now uses the moment stock became saleable.
+
+## Tests (opt-in, real database — run them one file at a time)
+`MONEY_DB_TEST=1 npx vitest run --no-file-parallelism tests/integration/transfers.db.test.js tests/integration/repack.db.test.js tests/integration/valuation.db.test.js tests/integration/money-foundation.db.test.js`
+(34 tests). They need an isolated database with every migration applied — never run them against production.

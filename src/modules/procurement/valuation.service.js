@@ -70,8 +70,8 @@ export class ValuationService {
     // ── warehouse (bought, not yet on a shelf), each purchase at its own price ──
     const endBy = new Map(whEnd.map((e) => [e.id, e]))
     const startBy = new Map(whStart.map((e) => [e.id, e]))
-    const units = (e) => (e ? Math.max(0, e.received - e.damaged - e.sent - e.adj) : 0)
-    let whOpen = 0, whClose = 0, goodsIn = 0, doorLoss = 0, sentValue = 0, sentUnits = 0
+    const units = (e) => (e ? Math.max(0, e.received - e.damaged - e.sent - (e.conv ?? 0) - e.adj) : 0)
+    let whOpen = 0, whClose = 0, goodsIn = 0, doorLoss = 0, sentValue = 0, sentUnits = 0, repackLoss = 0
     const warehouseRows = []
     for (const id of new Set([...endBy.keys(), ...startBy.keys()])) {
       const a = startBy.get(id)
@@ -82,15 +82,20 @@ export class ValuationService {
       goodsIn += ((b?.received ?? 0) - (a?.received ?? 0)) * price
       doorLoss += ((b?.damaged ?? 0) - (a?.damaged ?? 0)) * price
       const dSent = (b?.sent ?? 0) - (a?.sent ?? 0)
-      sentValue += dSent * price
+      // Units used up by repacking leave the warehouse at full cost; what lands on shelves is that minus the grams lost on the way.
+      const dConv = (b?.conv ?? 0) - (a?.conv ?? 0)
+      const dLost = (b?.conv_lost_value ?? 0) - (a?.conv_lost_value ?? 0)
+      repackLoss += dLost
+      sentValue += dSent * price + dConv * price - dLost
       sentUnits += dSent
-      if (units(b) > 0) warehouseRows.push({ entryNo: Number(b.entry_no), product: b.product, vendor: b.vendor, units: units(b), price, value: round2(units(b) * price) })
+      if (units(b) > 0) warehouseRows.push({ entryNo: Number(b.entry_no), product: b.product, vendor: b.vendor, units: units(b), inTransit: Math.min(units(b), Number(b.transit ?? 0)), price, value: round2(units(b) * price) })
     }
     const out = (kinds) => whOut.filter((o) => kinds(o.kind)).reduce((n, o) => n + o.value, 0)
     const outUnits = (kinds) => whOut.filter((o) => kinds(o.kind)).reduce((n, o) => n + o.units, 0)
     const warehouse = {
+      transitValue: warehouseRows.reduce((n, r) => n + r.inTransit * r.price, 0),
       openingValue: whOpen, closingValue: whClose, goodsInValue: goodsIn, sentValue, sentUnits,
-      lossValue: out((k) => LOSS_KINDS.has(k)) + doorLoss, doorLoss, returnedValue: out((k) => k === 'VENDOR_RETURN'),
+      lossValue: out((k) => LOSS_KINDS.has(k)) + doorLoss + repackLoss, doorLoss, repackLoss, returnedValue: out((k) => k === 'VENDOR_RETURN'),
     }
 
     // ── goods delivered straight from the hold to a B2B request ──
@@ -102,7 +107,8 @@ export class ValuationService {
     const { profit, rollForward } = buildProfit({ stores: { flows, openingValue, closingValue }, warehouse, supplies })
 
     // ── does goods sent from the warehouse equal goods received on shelves? ──
-    const shelfIn = moves.filter((m) => m.type === 'PROCUREMENT_RECEIPT').reduce((n, m) => n + m.delta, 0) + moves.filter((m) => m.type === 'PROCUREMENT_REVERSAL').reduce((n, m) => n + m.delta, 0)
+    // Packs made by repacking come from converted units, not from sent units, so they are checked separately (they have a different unit).
+    const shelfIn = moves.filter((m) => m.type === 'PROCUREMENT_RECEIPT' && !m.from_repack).reduce((n, m) => n + m.delta, 0) + moves.filter((m) => m.type === 'PROCUREMENT_REVERSAL' && !m.from_repack).reduce((n, m) => n + m.delta, 0)
     checks.transfer = { shelfUnits: shelfIn, warehouseUnits: sentUnits, ok: shelfIn === sentUnits }
     checks.unpricedSupplyUnits = supplies.unpricedUnits
     checks.estimatedOpening.value = round2(checks.estimatedOpening.value)
@@ -110,7 +116,7 @@ export class ValuationService {
     return {
       profit, rollForward, checks,
       stock: {
-        openingValue: round2(openingValue), closingValue: round2(closingValue), warehouseOpening: round2(whOpen), warehouseClosing: round2(whClose),
+        openingValue: round2(openingValue), closingValue: round2(closingValue), warehouseOpening: round2(whOpen), warehouseClosing: round2(whClose), inTransit: round2(warehouse.transitValue),
         totalOpening: round2(openingValue + whOpen), totalClosing: round2(closingValue + whClose), basis: previousMonth ? 'CLOSED_MONTH' : 'ESTIMATED',
       },
       byProduct: [...products, ...(supplies.units > 0 ? [{ productId: null, name: 'Direct B2B supplies (from the warehouse hold)', units: supplies.units, sales: round2(supplies.revenue), cogs: round2(supplies.cost), gross: round2(supplies.revenue - supplies.cost), marginPct: margin(supplies.revenue, supplies.cost), loss: 0, stockQty: 0, stockValue: 0 }] : [])],

@@ -22,7 +22,8 @@ export class ValuationRepository {
       `SELECT m.shop_product_id, m.type, m.quantity_delta AS delta, m.quantity_before AS before, m.created_at AS at, m.order_id,
               ol.price AS line_price,
               CASE WHEN o.id IS NULL THEN NULL WHEN o.b2b_approval_status IS NOT NULL OR o.buyer_gstin IS NOT NULL THEN 'B2B' ELSE 'B2C' END AS channel,
-              pe.unit_price AS entry_price
+              COALESCE((m.metadata->>'unitCost')::numeric, pe.unit_price) AS entry_price,
+              (m.metadata ? 'conversionId') AS from_repack
          FROM stock_movements m
          LEFT JOIN orders o ON o.id = m.order_id
          LEFT JOIN LATERAL (SELECT oi.price FROM order_items oi WHERE oi.order_id = m.order_id AND oi.product_id = m.product_id LIMIT 1) ol ON TRUE
@@ -44,9 +45,14 @@ export class ValuationRepository {
                      - COALESCE((SELECT SUM((ev.detail->>'quantity')::int) FROM procurement_events ev WHERE ev.entry_id = e.id AND ev.kind = 'ARRIVED_LATER' AND ev.created_at >= $1), 0)
                    ELSE 0 END AS received,
               CASE WHEN e.received_at < $1 THEN e.damaged_qty ELSE 0 END AS damaged,
-              COALESCE((SELECT SUM(a.quantity) FROM procurement_allocations a WHERE a.entry_id = e.id AND a.created_at < $1), 0)
-                - COALESCE((SELECT SUM(a.quantity) FROM procurement_allocations a WHERE a.entry_id = e.id AND a.reversed_at < $1), 0) AS sent,
-              COALESCE((SELECT SUM(j.quantity) FROM procurement_adjustments j WHERE j.entry_id = e.id AND j.shop_id IS NULL AND j.created_at < $1), 0) AS adj
+              COALESCE((SELECT SUM(a.quantity) FROM procurement_allocations a WHERE a.entry_id = e.id AND a.applied_at < $1), 0)
+                - COALESCE((SELECT SUM(a.quantity) FROM procurement_allocations a WHERE a.entry_id = e.id AND a.status = 'REVERSED' AND a.reversed_at < $1), 0) AS sent,
+              COALESCE((SELECT SUM(a.quantity) FROM procurement_allocations a WHERE a.entry_id = e.id AND a.created_at < $1 AND (a.applied_at IS NULL OR a.applied_at >= $1) AND (a.status <> 'CANCELLED' OR a.reversed_at >= $1)), 0) AS transit,
+              COALESCE((SELECT SUM(j.quantity) FROM procurement_adjustments j WHERE j.entry_id = e.id AND j.shop_id IS NULL AND j.created_at < $1), 0) AS adj,
+              COALESCE((SELECT SUM(c.units_used) FROM procurement_conversions c WHERE c.entry_id = e.id AND c.created_at < $1), 0)
+                - COALESCE((SELECT SUM(c.units_used) FROM procurement_conversions c WHERE c.entry_id = e.id AND c.reversed_at < $1), 0) AS conv,
+              COALESCE((SELECT SUM(c.grams_lost * e.unit_price::float / c.unit_size) FROM procurement_conversions c WHERE c.entry_id = e.id AND c.created_at < $1), 0)
+                - COALESCE((SELECT SUM(c.grams_lost * e.unit_price::float / c.unit_size) FROM procurement_conversions c WHERE c.entry_id = e.id AND c.reversed_at < $1), 0) AS conv_lost_value
          FROM procurement_entries e JOIN products p ON p.id = e.product_id JOIN vendors v ON v.id = e.vendor_id WHERE e.status <> 'CANCELLED'`, [instant])
     return rows
   }

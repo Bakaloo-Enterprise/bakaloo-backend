@@ -86,7 +86,7 @@ export class ProcurementService {
   figures(e) { return this.#figures(e) }
 
   #figures(e) {
-    const f = entryFigures({ expectedQty: e.expected_qty, receivedQty: e.received_qty, damagedQty: e.damaged_qty }, { allocated: e.allocated, centralAdjusted: e.central_adjusted, reserved: e.reserved })
+    const f = entryFigures({ expectedQty: e.expected_qty, receivedQty: e.received_qty, damagedQty: e.damaged_qty }, { allocated: e.allocated, centralAdjusted: e.central_adjusted, reserved: e.reserved, converted: e.converted })
     return { ...f, purchaseTotal: money(e.purchase_total), unitPrice: money(e.unit_price) }
   }
 
@@ -97,7 +97,7 @@ export class ProcurementService {
       invoiceRef: e.invoice_ref, receivingNote: e.receiving_note, status: e.status, purpose: e.purpose,
       destination: e.destination_shop_id ? { id: e.destination_shop_id, name: e.destination_name } : null,
       reservedFor: e.purpose === 'B2B_RESERVED' ? { businessAccountId: e.business_account_id, businessName: e.business_name, note: e.reservation_note } : null,
-      createdAt: e.created_at, reserved: e.reserved, invoiceCount: e.invoice_count, owedQty: e.owed_qty, receivedAt: e.received_at, ...this.#figures(e),
+      createdAt: e.created_at, inTransit: e.in_transit, reserved: e.reserved, converted: e.converted, packSize: e.pack_size, packUnit: e.pack_unit, invoiceCount: e.invoice_count, owedQty: e.owed_qty, receivedAt: e.received_at, ...this.#figures(e),
     }
   }
 
@@ -111,7 +111,7 @@ export class ProcurementService {
   async detail(id) {
     const e = await this.repo.entry(id)
     if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
-    const [allocations, adjustments, events, documents] = await Promise.all([this.repo.allocations(id), this.repo.adjustments(id), this.repo.events(id), this.repo.documents(id)])
+    const [allocations, adjustments, events, documents, conversions] = await Promise.all([this.repo.allocations(id), this.repo.adjustments(id), this.repo.events(id), this.repo.documents(id), this.repo.conversions(id)])
     return {
       ...this.#shape(e),
       allocations: allocations.map((a) => ({ id: a.id, shopId: a.shop_id, shopName: a.shop_name, quantity: a.quantity, status: a.status, note: a.note, at: a.created_at, reversedAt: a.reversed_at })),
@@ -119,6 +119,7 @@ export class ProcurementService {
         id: a.id, kind: a.kind, label: ADJUSTMENT_KINDS[a.kind].label, quantity: a.quantity, shopId: a.shop_id, shopName: a.shop_name, reason: a.reason, by: a.actor_name, at: a.created_at,
         value: valueOf(a.quantity, a.unit_cost), loss: isLossKind(a.kind),
       })),
+      conversions: conversions.map((c) => ({ id: c.id, unitsUsed: c.units_used, gramsUsed: c.grams_used, gramsPacked: c.grams_packed, gramsLost: c.grams_lost, status: c.status, note: c.note, at: c.created_at, reversedAt: c.reversed_at, by: c.actor_name, lines: c.lines })),
       documents: documents.map((d) => ({ id: d.id, kind: d.kind, fileName: d.file_name, mime: d.mime_type, size: d.size_bytes, at: d.created_at })),
       history: events.map((v) => ({ kind: v.kind, detail: v.detail, by: v.actor_name, at: v.created_at })),
     }
@@ -161,18 +162,18 @@ export class ProcurementService {
   }
 
   // ─── split across stores ───
-  async allocate(entryId, { allocations, note, updateCostPrice = true }, actor) {
+  async allocate(entryId, { allocations, note, updateCostPrice = true, inTransit = false }, actor) {
     const touched = await withTransaction(async (client) => {
       const e = await this.repo.lockEntry(client, entryId)
       if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
-      return this.applySplit(client, e, allocations, { note, updateCostPrice }, actor)
+      return this.applySplit(client, e, allocations, { note, updateCostPrice, inTransit }, actor)
     })
-    await invalidateCatalogCaches({ shopIds: touched.shopIds, productIds: [touched.productId] })
+    if (!inTransit) await invalidateCatalogCaches({ shopIds: touched.shopIds, productIds: [touched.productId] })
     return this.detail(entryId)
   }
 
   /** Send stock to stores inside the caller's transaction. `e` is the locked entry with live figures. */
-  async applySplit(client, e, allocations, { note, updateCostPrice = true }, actor) {
+  async applySplit(client, e, allocations, { note, updateCostPrice = true, inTransit = false }, actor) {
     const entryId = e.id
     const fig = this.#figures(e)
     const rows = checkSplit({ available: fig.available, purpose: e.purpose, destinationShopId: e.destination_shop_id, status: e.status }, allocations)
@@ -182,20 +183,79 @@ export class ProcurementService {
       if (!shop || !shop.is_active) throw new BusinessError(`${shop?.name ?? 'That store'} is not active.`, 409, 'SHOP_INACTIVE')
       const sp = await this.repo.ensureShopProduct(client, r.shopId, e.product_id)
       if (!sp) throw new BusinessError(`${e.product_name} was removed from ${shop.name}. Add it back first.`, 409, 'PRODUCT_REMOVED_FROM_STORE')
+      let movement = null
+      if (!inTransit) {
+        try {
+          movement = await this.repo.applyStock(client, {
+            shopProductId: sp.id, delta: r.quantity, type: 'PROCUREMENT_RECEIPT', reason: `Procurement #${e.entry_no} (${e.vendor_name})`,
+            actor: { userId: actor.userId }, metadata: { procurementEntryId: e.id, entryNo: Number(e.entry_no) },
+          })
+        } catch (err) { throw this.#stockError(err) }
+        if (updateCostPrice) await this.repo.setCostPrice(client, sp.id, e.unit_price)
+      }
+      const allocId = await this.repo.insertAllocation(client, { entryId, shopId: r.shopId, shopProductId: sp.id, quantity: r.quantity, movementId: movement?.id ?? null, note, actorId: actor.userId, inTransit })
+      out.push({ allocationId: allocId, shopId: r.shopId, shopName: shop.name, quantity: r.quantity })
+    }
+    await this.repo.logEvent(client, entryId, actor.userId, inTransit ? 'DISPATCHED' : 'ALLOCATED', { split: out.map((o) => ({ shop: o.shopName, quantity: o.quantity })), updateCostPrice, inTransit })
+    await emitInTx(client, 'procurement.allocate', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: { split: out } })
+    return { shopIds: out.map((o) => o.shopId), productId: e.product_id }
+  }
+
+  // ─── transfers "on the way": received by the store ───
+  async transfers() {
+    const rows = await this.repo.transitList()
+    return rows.map((r) => ({ id: r.id, quantity: r.quantity, sentAt: r.created_at, note: r.note, entryId: r.entry_id, entryNo: Number(r.entry_no), product: r.product_name, vendor: r.vendor_name, shop: r.shop_name, by: r.actor_name }))
+  }
+
+  /**
+   * The store confirms what actually arrived. That is the moment the stock becomes saleable there. If less arrived than
+   * was sent, the missing units are written off as lost on the way (valued at cost); more than was sent is refused.
+   */
+  async receiveTransfer(allocationId, { receivedQty, note }, actor) {
+    const info = await withTransaction(async (client) => {
+      const peek = await this.repo.allocationFull(client, allocationId)
+      if (!peek) throw new BusinessError('Transfer not found.', 404, 'ALLOCATION_NOT_FOUND')
+      const e = await this.repo.lockEntry(client, peek.entry_id)
+      const a = await this.repo.allocationFull(client, allocationId)
+      if (a.status !== 'IN_TRANSIT') throw new BusinessError(a.status === 'APPLIED' ? 'That transfer was already received.' : 'That transfer is not on the way.', 409, 'NOT_IN_TRANSIT')
+      const got = Number(receivedQty)
+      if (!Number.isInteger(got) || got < 1) throw new BusinessError('Say how many arrived (at least 1). If nothing arrived, cancel the transfer.', 400, 'VALIDATION', { receivedQty: 'Invalid' })
+      if (got > a.quantity) throw new BusinessError(`Only ${a.quantity} was sent, so ${got} cannot arrive.`, 409, 'MORE_THAN_SENT', { sent: a.quantity })
       let movement
       try {
         movement = await this.repo.applyStock(client, {
-          shopProductId: sp.id, delta: r.quantity, type: 'PROCUREMENT_RECEIPT', reason: `Procurement #${e.entry_no} (${e.vendor_name})`,
-          actor: { userId: actor.userId }, metadata: { procurementEntryId: e.id, entryNo: Number(e.entry_no) },
+          shopProductId: a.shop_product_id, delta: got, type: 'PROCUREMENT_RECEIPT', reason: `Procurement #${e.entry_no} (${e.vendor_name}) — received at the store`,
+          actor: { userId: actor.userId }, metadata: { procurementEntryId: e.id, entryNo: Number(e.entry_no), allocationId },
         })
       } catch (err) { throw this.#stockError(err) }
-      if (updateCostPrice) await this.repo.setCostPrice(client, sp.id, e.unit_price)
-      const allocId = await this.repo.insertAllocation(client, { entryId, shopId: r.shopId, shopProductId: sp.id, quantity: r.quantity, movementId: movement.id, note, actorId: actor.userId })
-      out.push({ allocationId: allocId, shopId: r.shopId, shopName: shop.name, quantity: r.quantity })
-    }
-    await this.repo.logEvent(client, entryId, actor.userId, 'ALLOCATED', { split: out.map((o) => ({ shop: o.shopName, quantity: o.quantity })), updateCostPrice })
-    await emitInTx(client, 'procurement.allocate', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: { split: out } })
-    return { shopIds: out.map((o) => o.shopId), productId: e.product_id }
+      await this.repo.setCostPrice(client, a.shop_product_id, e.unit_price)
+      await this.repo.markTransferReceived(client, allocationId, { quantity: got, movementId: movement.id, userId: actor.userId })
+      const lost = a.quantity - got
+      if (lost > 0) {
+        await this.repo.insertAdjustment(client, { entryId: e.id, kind: 'WASTAGE', quantity: lost, shopId: null, movementId: null, unitCost: e.unit_price, reason: `Lost on the way to ${a.shop_name}${note ? ` — ${note}` : ''}`.slice(0, 300), actorId: actor.userId })
+      }
+      await this.repo.logEvent(client, e.id, actor.userId, 'TRANSFER_RECEIVED', { shop: a.shop_name, sent: a.quantity, received: got, lost })
+      await emitInTx(client, 'procurement.transfer.receive', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: e.id, after: { allocationId, sent: a.quantity, received: got, lost } })
+      return { entryId: e.id, shopId: a.shop_id, productId: e.product_id }
+    })
+    await invalidateCatalogCaches({ shopIds: [info.shopId], productIds: [info.productId] })
+    return this.detail(info.entryId)
+  }
+
+  /** A transfer that never left: its units are free again. */
+  async cancelTransfer(allocationId, actor) {
+    const entryId = await withTransaction(async (client) => {
+      const peek = await this.repo.allocationFull(client, allocationId)
+      if (!peek) throw new BusinessError('Transfer not found.', 404, 'ALLOCATION_NOT_FOUND')
+      const e = await this.repo.lockEntry(client, peek.entry_id)
+      const a = await this.repo.allocationFull(client, allocationId)
+      if (a.status !== 'IN_TRANSIT') throw new BusinessError('That transfer is not on the way.', 409, 'NOT_IN_TRANSIT')
+      await this.repo.markCancelled(client, allocationId, actor.userId)
+      await this.repo.logEvent(client, e.id, actor.userId, 'TRANSFER_CANCELLED', { shop: a.shop_name, quantity: a.quantity })
+      await emitInTx(client, 'procurement.transfer.cancel', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: e.id, after: { allocationId, quantity: a.quantity } })
+      return e.id
+    })
+    return this.detail(entryId)
   }
 
   async reverseAllocation(allocationId, actor) {
@@ -204,6 +264,7 @@ export class ProcurementService {
       if (!peek.rows[0]) throw new BusinessError('Allocation not found.', 404, 'ALLOCATION_NOT_FOUND')
       const e = await this.repo.lockEntry(client, peek.rows[0].entry_id)
       const a = await this.repo.allocation(client, allocationId)
+      if (a.status === 'IN_TRANSIT') throw new BusinessError('That transfer is still on the way. Cancel it instead.', 409, 'STILL_IN_TRANSIT')
       if (a.status !== 'APPLIED') throw new BusinessError('That allocation was already reversed.', 409, 'ALREADY_REVERSED')
       const taken = await this.repo.shopHeld(client, e.id, a.shop_id)
       if (taken < a.quantity) throw new BusinessError('Part of this stock was already written off at the store. Record an adjustment instead.', 409, 'PARTLY_ADJUSTED')

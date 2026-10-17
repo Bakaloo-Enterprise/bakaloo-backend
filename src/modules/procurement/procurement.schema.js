@@ -51,7 +51,7 @@ export const allocateSchema = {
     required: ['allocations'],
     properties: {
       allocations: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['shopId', 'quantity'], properties: { shopId: uuid, quantity: { type: 'integer', minimum: 1, maximum: 10_000_000 } } } },
-      note: { type: 'string', maxLength: 300 }, updateCostPrice: { type: 'boolean' },
+      note: { type: 'string', maxLength: 300 }, updateCostPrice: { type: 'boolean' }, inTransit: { type: 'boolean' },
     },
   },
 }
@@ -99,7 +99,7 @@ export const distributeSchema = {
     properties: {
       reservations: { type: 'array', maxItems: 100, items: { type: 'object', required: ['requirementId', 'quantity'], properties: { requirementId: uuid, quantity: { type: 'integer', minimum: 1, maximum: 10_000_000 } } } },
       allocations: { type: 'array', maxItems: 100, items: { type: 'object', required: ['shopId', 'quantity'], properties: { shopId: uuid, quantity: { type: 'integer', minimum: 1, maximum: 10_000_000 } } } },
-      note: { type: 'string', maxLength: 300 },
+      note: { type: 'string', maxLength: 300 }, inTransit: { type: 'boolean' },
     },
   },
 }
@@ -109,3 +109,18 @@ export const monthlySchema = { querystring: { type: 'object', required: ['month'
 const monthStr = { type: 'string', pattern: '^\\d{4}-\\d{2}$' }
 export const closeMonthSchema = { body: { type: 'object', required: ['month'], properties: { month: monthStr, note: { type: 'string', maxLength: 300 } } } }
 export const reopenMonthSchema = { body: { type: 'object', required: ['month', 'reason'], properties: { month: monthStr, reason: { type: 'string', minLength: 1, maxLength: 300 } } } }
+
+export const repackSchema = {
+  params: idParams,
+  body: {
+    type: 'object',
+    required: ['unitsUsed', 'lines'],
+    properties: {
+      unitsUsed: { type: 'integer', minimum: 1, maximum: 10_000_000 }, note: { type: 'string', maxLength: 300 },
+      lines: { type: 'array', minItems: 1, maxItems: 60, items: { type: 'object', required: ['shopId', 'productId', 'packs'], properties: { shopId: uuid, productId: uuid, packs: { type: 'integer', minimum: 1, maximum: 10_000_000 } } } },
+    },
+  },
+}
+export const packSizeSchema = { params: idParams, body: { type: 'object', required: ['size', 'unit'], properties: { size: { type: 'integer', minimum: 1, maximum: 100000000 }, unit: { type: 'string', enum: ['G', 'ML'] } } } }
+
+export const receiveTransferSchema = { params: idParams, body: { type: 'object', required: ['receivedQty'], properties: { receivedQty: { type: 'integer', minimum: 1, maximum: 10000000 }, note: { type: 'string', maxLength: 200 } } } }

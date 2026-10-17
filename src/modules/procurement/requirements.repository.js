@@ -3,11 +3,12 @@ import { query } from '../../config/database.js'
 const REQ_SELECT = `
   r.id, r.req_no, r.customer_name, r.customer_phone, r.business_account_id, r.wa_conversation_id, r.source, r.status,
   to_char(r.delivery_date, 'YYYY-MM-DD') AS delivery_date, r.payment_terms, r.note, r.created_at, u.name AS created_by_name,
-  b.company_name AS business_name`
+  b.company_name AS business_name, r.order_id, ord.order_number`
 const REQ_FROM = `
   FROM b2b_requirements r
   LEFT JOIN users u ON u.id = r.created_by
-  LEFT JOIN business_accounts b ON b.id = r.business_account_id`
+  LEFT JOIN business_accounts b ON b.id = r.business_account_id
+  LEFT JOIN orders ord ON ord.id = r.order_id`
 
 export class RequirementsRepository {
   async list({ status, source, search, limit = 30, offset = 0 }) {

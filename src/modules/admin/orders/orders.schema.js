@@ -141,6 +141,8 @@ export const manualOrderSchema = {
       // B2C = a home customer (COD / manual payment). B2B = a business buying on credit: it becomes an approved
       // B2B credit order, so it shows in B2B Orders and Collections and is paid by recorded payments.
       orderType: { type: 'string', enum: ['B2C', 'B2B'], default: 'B2C' },
+      // B2B only: the customer request this order fulfils. The request becomes DELIVERED with the order, in one transaction.
+      requirementId: { type: 'string', format: 'uuid' },
       dueDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
       advance: { type: 'object', required: ['amount', 'method'], properties: { amount: { type: 'number', minimum: 0.01 }, method: { type: 'string', enum: ['CASH', 'UPI'] } } },
       paymentMethod: { type: 'string', enum: ['COD', 'MANUAL'], default: 'MANUAL' },

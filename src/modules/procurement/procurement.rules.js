@@ -71,10 +71,10 @@ export function normalizeEntry(input, { today }) {
 /**
  * Where an entry's stock stands.
  *   usable    = received − damaged at the door
- *   available = usable − sent to stores (net of reversals) − taken out of central stock (returns, damage, B2B…) − reserved for B2B requests
+ *   available = usable − sent to stores (net of reversals) − taken out of central stock (returns, damage, B2B…)  − reserved for B2B requests − used up by repacking into packs
  *   shortage  = expected − received (never negative)
  */
-export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocated = 0, centralAdjusted = 0, reserved = 0 } = {}) {
+export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocated = 0, centralAdjusted = 0, reserved = 0, converted = 0 } = {}) {
   const usable = receivedQty - damagedQty
   return {
     usable,
@@ -82,7 +82,8 @@ export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocat
     allocated,
     centralAdjusted,
     reserved,
-    available: usable - allocated - centralAdjusted - reserved,
+    converted,
+    available: usable - allocated - centralAdjusted - reserved - converted,
   }
 }
 
@@ -132,8 +133,8 @@ export function checkAdjustment(entry, { kind, quantity, shopId, reason }, { ava
 }
 
 /** Entry can be cancelled only while nothing was done with it. */
-export function canCancel({ allocationCount, adjustmentCount, reservationCount = 0 }) {
-  return allocationCount === 0 && adjustmentCount === 0 && reservationCount === 0
+export function canCancel({ allocationCount, adjustmentCount, reservationCount = 0, conversionCount = 0 }) {
+  return allocationCount === 0 && adjustmentCount === 0 && reservationCount === 0 && conversionCount === 0
 }
 
 /**
