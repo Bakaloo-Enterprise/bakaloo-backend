@@ -47,3 +47,27 @@ describe('findExceptions', () => {
     expect(findExceptions(d).find((e) => e.code === 'STILL_ORDERED').rows).toHaveLength(1)
   })
 })
+
+import { monthBefore, monthOf } from '../../../src/modules/procurement/monthly.rules.js'
+
+describe('month helpers', () => {
+  it('finds the month a date belongs to and the one before it', () => {
+    expect(monthOf('2026-10-17')).toBe('2026-10')
+    expect(monthBefore('2026-10')).toBe('2026-09')
+    expect(monthBefore('2026-01')).toBe('2025-12')
+  })
+})
+
+describe('findExceptions — stock and profit checks', () => {
+  const base = { window: { asOf: '2026-10-31' }, purchases: [], payables: [], payments: [], aging: [], manualUnpaid: [] }
+  it('blocks nothing when the stock history is consistent', () => {
+    expect(findExceptions({ ...base, checks: { ledgerMismatch: [], gaps: [], noCost: [], openingDiffers: [], estimatedOpening: { shelves: 0, value: 0 }, transfer: { ok: true, shelfUnits: 4, warehouseUnits: 4 }, unpricedSupplyUnits: 0 }, valuation: { rollForward: { difference: 0 } } })).toEqual([])
+  })
+  it('flags a broken history, a transfer that does not match and a roll-forward that does not close', () => {
+    const codes = findExceptions({
+      ...base, valuation: { rollForward: { difference: 12.5 } },
+      checks: { ledgerMismatch: [{ ref: 'a', detail: 'x' }], gaps: [{ ref: 'a', detail: 'x' }], noCost: [{ ref: 'a', detail: 'x' }], openingDiffers: [{ ref: 'a', detail: 'x' }], estimatedOpening: { shelves: 3, value: 90 }, transfer: { ok: false, shelfUnits: 5, warehouseUnits: 4 }, unpricedSupplyUnits: 2 },
+    }).map((e) => e.code)
+    expect(codes).toEqual(['STOCK_LEDGER_MISMATCH', 'TRANSFER_MISMATCH', 'ROLL_FORWARD', 'STOCK_LEDGER_GAP', 'NO_COST', 'OPENING_DIFFERS', 'OPENING_ESTIMATED', 'UNPRICED_SUPPLY'])
+  })
+})

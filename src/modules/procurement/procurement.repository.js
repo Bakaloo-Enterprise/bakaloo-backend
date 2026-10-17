@@ -118,7 +118,7 @@ export class ProcurementRepository {
     return rows[0].id
   }
   async paymentById(client, id) {
-    const { rows } = await client.query(`SELECT id, vendor_id, amount, voided_at FROM vendor_payments WHERE id = $1 FOR UPDATE`, [id])
+    const { rows } = await client.query(`SELECT id, vendor_id, amount, to_char(paid_on, 'YYYY-MM-DD') AS paid_on, voided_at FROM vendor_payments WHERE id = $1 FOR UPDATE`, [id])
     return rows[0] ?? null
   }
   async voidPayment(client, id, { actorId, reason }) {

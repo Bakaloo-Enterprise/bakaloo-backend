@@ -8,6 +8,10 @@ import { SuppliersService } from './suppliers.service.js'
 import { error } from '../../utils/apiResponse.js'
 import { DistributionRepository } from './distribution.repository.js'
 import { DistributionService } from './distribution.service.js'
+import { PeriodsRepository } from './periods.repository.js'
+import { PeriodsService } from './periods.service.js'
+import { ValuationRepository } from './valuation.repository.js'
+import { ValuationService } from './valuation.service.js'
 import { MonthlyRepository } from './monthly.repository.js'
 import { MonthlyService } from './monthly.service.js'
 import { RequirementsRepository } from './requirements.repository.js'
@@ -24,7 +28,11 @@ export default async function procurementRoutes(fastify) {
   const service = new ProcurementService({ repo: procRepo })
   const distribution = new DistributionService({ repo: new DistributionRepository(), procurement: service, procRepo })
   const suppliers = new SuppliersService({ repo: new ProcurementRepository(), procurement: service })
-  const monthly = new MonthlyService({ repo: new MonthlyRepository() })
+  const periodsRepo = new PeriodsRepository()
+  const monthly = new MonthlyService({ repo: new MonthlyRepository(), valuation: new ValuationService({ repo: new ValuationRepository() }), periods: periodsRepo })
+  const periods = new PeriodsService({ repo: periodsRepo, monthly })
+  service.periods = periods
+  suppliers.periods = periods
   const reqs = new RequirementsService({ repo: new RequirementsRepository(), distribution })
   fastify.addHook('onRequest', async (request, reply) => {
     await fastify.authenticate(request, reply)
@@ -72,7 +80,12 @@ export default async function procurementRoutes(fastify) {
   route('get', '/reports/reconciliation', VIEW, S.reconciliationSchema, 'Reconciliation fetched', (r) => service.reconciliation(r.query))
 
   // Month-end report: a screen preview and the Excel workbook, both built from the same data.
-  route('get', '/reports/monthly', VIEW, S.monthlySchema, 'Month report fetched', (r) => monthly.preview(r.query.month))
+  route('get', '/reports/monthly', VIEW, S.monthlySchema, 'Month report fetched', async (r) => {
+    const d = await monthly.build(r.query.month)
+    return { ...monthly.previewOf(d), closing: await periods.status(r.query.month, d.closed ? null : d), history: (await periods.history()).slice(0, 6) }
+  })
+  route('post', '/reports/monthly/close', MANAGE, S.closeMonthSchema, 'Month closed', (r) => periods.close(r.body.month, r.body, actor(r)))
+  route('post', '/reports/monthly/reopen', MANAGE, S.reopenMonthSchema, 'Month reopened', (r) => periods.reopen(r.body.month, r.body, actor(r)))
   fastify.get('/reports/monthly/download', { schema: S.monthlySchema, preValidation: requireBusiness(VIEW), config: { requiredPermission: VIEW } }, async (request, reply) => {
     try {
       const file = await monthly.workbook(request.query.month)

@@ -59,6 +59,7 @@ export class SuppliersService {
       const full = await this.repo.vendorById(vendorId, client)
       const s = settleBills(bills.map((b) => this.#bill(b)), Number(paid), { creditDays: full.credit_days, today: this.today() })
       const p = checkPayment(input, { balance: s.owed, today: this.today() })
+      await this.periods?.assertOpen(p.paidOn, 'That payment date')
       const payId = await this.repo.insertPayment(client, { vendorId, ...p, reference: input.reference?.trim() || null, note: input.note?.trim() || null, actorId: actor.userId })
       await emitInTx(client, 'procurement.vendor.pay', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'vendor', target_id: vendorId, after: { paymentId: payId, ...p, owedBefore: s.owed } })
       return payId
@@ -74,6 +75,7 @@ export class SuppliersService {
       const p = await this.repo.paymentById(client, paymentId)
       if (!p) throw new BusinessError('Payment not found.', 404, 'PAYMENT_NOT_FOUND')
       if (p.voided_at) throw new BusinessError('That payment was already cancelled.', 409, 'ALREADY_VOIDED')
+      await this.periods?.assertOpen(p.paid_on, 'That payment')
       await this.repo.voidPayment(client, paymentId, { actorId: actor.userId, reason: text.slice(0, 200) })
       await emitInTx(client, 'procurement.vendor.pay.void', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'vendor', target_id: p.vendor_id, after: { paymentId, amount: p.amount, reason: text } })
       return p.vendor_id

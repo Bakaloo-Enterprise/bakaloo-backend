@@ -51,6 +51,7 @@ export class ProcurementService {
     // "On the way" purchases are priced on what was ordered; the counted figures come with the receiving check.
     const ordered = input.ordered === true
     const n = normalizeEntry(ordered ? { ...input, receivedQty: input.expectedQty, damagedQty: 0 } : input, { today: this.today() })
+    await this.periods?.assertOpen(n.procuredOn, 'That purchase date')
     const product = await this.repo.product(input.productId)
     if (!product) throw new BusinessError('Product not found.', 404, 'PRODUCT_NOT_FOUND')
     if (input.destinationShopId) {
@@ -283,6 +284,7 @@ export class ProcurementService {
       const e = await this.repo.lockEntry(client, entryId)
       if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
       if (e.status === 'CANCELLED') throw new BusinessError('Already cancelled.', 409, 'ENTRY_CANCELLED')
+      await this.periods?.assertOpen(e.procured_on, 'This purchase')
       if (!canCancel(await this.repo.counts(client, entryId))) throw new BusinessError('Stock from this purchase was already used. Record a vendor return or adjustment instead.', 409, 'ENTRY_IN_USE')
       await this.repo.setStatus(client, entryId, 'CANCELLED')
       await this.repo.logEvent(client, entryId, actor.userId, 'CANCELLED', {})

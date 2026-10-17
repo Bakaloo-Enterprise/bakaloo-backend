@@ -4,20 +4,22 @@ import { query } from '../../config/database.js'
 export class MonthlyRepository {
   async purchases(from, to) {
     const { rows } = await query(
-      `SELECT e.id, e.entry_no, to_char(e.procured_on, 'YYYY-MM-DD') AS date, v.name AS vendor, p.name AS product, e.expected_qty, e.received_qty, e.damaged_qty, e.owed_qty,
+      `SELECT e.id, e.entry_no, to_char(e.procured_on, 'YYYY-MM-DD') AS date, to_char(GREATEST(e.procured_on, (e.received_at AT TIME ZONE 'Asia/Kolkata')::date), 'YYYY-MM-DD') AS bill_date, v.name AS vendor, p.name AS product, e.expected_qty, e.received_qty, e.damaged_qty, e.owed_qty,
               e.unit_price, e.purchase_total AS total, e.status, e.invoice_ref,
               (SELECT COUNT(*) FROM procurement_documents d WHERE d.entry_id = e.id AND d.kind = 'INVOICE')::int AS invoices
          FROM procurement_entries e JOIN vendors v ON v.id = e.vendor_id JOIN products p ON p.id = e.product_id
-        WHERE e.status <> 'CANCELLED' AND e.procured_on >= $1::date AND e.procured_on <= $2::date ORDER BY e.procured_on, e.entry_no`, [from, to])
+        WHERE e.status <> 'CANCELLED'
+          AND ((e.procured_on >= $1::date AND e.procured_on <= $2::date) OR (e.status = 'ACTIVE' AND GREATEST(e.procured_on, (e.received_at AT TIME ZONE 'Asia/Kolkata')::date) >= $1::date AND GREATEST(e.procured_on, (e.received_at AT TIME ZONE 'Asia/Kolkata')::date) <= $2::date))
+        ORDER BY e.procured_on, e.entry_no`, [from, to])
     return rows
   }
 
   /** Received purchases up to a date; credit for goods sent back counted only up to `instant`. */
   async billsAsOf(date, instant) {
     const { rows } = await query(
-      `SELECT e.id, e.entry_no, e.vendor_id, to_char(e.procured_on, 'YYYY-MM-DD') AS procured_on, e.purchase_total AS total,
+      `SELECT e.id, e.entry_no, e.vendor_id, to_char(GREATEST(e.procured_on, (e.received_at AT TIME ZONE 'Asia/Kolkata')::date), 'YYYY-MM-DD') AS procured_on, e.purchase_total AS total,
               COALESCE((SELECT SUM(a.quantity * a.unit_cost) FROM procurement_adjustments a WHERE a.entry_id = e.id AND a.kind = 'VENDOR_RETURN' AND a.created_at < $2), 0)::numeric(14,2) AS credit
-         FROM procurement_entries e WHERE e.status = 'ACTIVE' AND e.procured_on <= $1::date ORDER BY e.procured_on, e.entry_no`, [date, instant])
+         FROM procurement_entries e WHERE e.status = 'ACTIVE' AND GREATEST(e.procured_on, (e.received_at AT TIME ZONE 'Asia/Kolkata')::date) <= $1::date ORDER BY procured_on, e.entry_no`, [date, instant])
     return rows
   }
   async paidAsOf(date) {

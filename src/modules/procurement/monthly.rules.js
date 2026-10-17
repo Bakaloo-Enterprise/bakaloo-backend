@@ -32,6 +32,14 @@ export function ageBucket(daysLate) {
   if (daysLate <= 30) return '8–30 days late'
   return 'Over 30 days late'
 }
+/** "2026-10-17" → "2026-10". */
+export const monthOf = (ymd) => String(ymd).slice(0, 7)
+/** "2026-01" → "2025-12". */
+export function monthBefore(month) {
+  const [y, m] = month.split('-').map(Number)
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
+}
+
 export const AGE_BUCKETS = Object.freeze(['Not due yet', '1–7 days late', '8–30 days late', 'Over 30 days late'])
 
 export const daysBetween = (fromYmd, toYmd) => Math.round((Date.parse(`${toYmd}T00:00:00Z`) - Date.parse(`${fromYmd}T00:00:00Z`)) / 86_400_000)
@@ -54,6 +62,15 @@ export function findExceptions(d) {
   add('LEDGER_MISMATCH', 'bad', (n) => `${n} supplier account${n === 1 ? ' does' : 's do'} not add up (opening + bills − returns − paid ≠ closing).`, d.payables.filter((v) => Math.abs(v.difference) >= 0.01).map((v) => ({ ref: v.vendor, who: v.vendor, detail: `off by ₹${v.difference}` })))
   add('VOIDED_PAYMENT', 'info', (n) => `${n} supplier payment${n === 1 ? ' was' : 's were'} cancelled this month.`, d.payments.filter((p) => p.voided).map((p) => ({ ref: p.vendor, who: p.by ?? '', detail: `₹${p.amount} on ${p.date}: ${p.voidReason ?? ''}` })))
   add('MANUAL_UNPAID', 'warn', (n) => `${n} manual order${n === 1 ? ' has' : 's have'} not been marked as paid yet.`, (d.manualUnpaid ?? []).map((m) => ({ ref: m.order, who: m.customer, detail: `₹${m.total} · ${m.date}` })))
+  const c = d.checks ?? {}
+  add('STOCK_LEDGER_MISMATCH', 'bad', (n) => `${n} shelf${n === 1 ? '' : 'ves'} where the stock record does not match the stock history.`, c.ledgerMismatch ?? [])
+  add('TRANSFER_MISMATCH', 'bad', () => 'Goods sent from the warehouse do not match goods received on the shelves.', c.transfer && !c.transfer.ok ? [{ ref: 'Warehouse ↔ shelves', detail: `warehouse sent ${c.transfer.warehouseUnits}, shelves received ${c.transfer.shelfUnits}` }] : [])
+  add('ROLL_FORWARD', 'bad', () => 'Opening stock value + goods in − goods out does not equal closing stock value.', d.valuation && Math.abs(d.valuation.rollForward.difference) > 1 ? [{ ref: 'Stock value', detail: `off by ₹${d.valuation.rollForward.difference}` }] : [])
+  add('STOCK_LEDGER_GAP', 'warn', (n) => `${n} shelf${n === 1 ? '' : 'ves'} changed without a stock record (the profit counts it as “unexplained”).`, c.gaps ?? [])
+  add('NO_COST', 'warn', (n) => `${n} product${n === 1 ? '' : 's'} sold or counted with no known cost — their cost is taken as ₹0.`, c.noCost ?? [])
+  add('OPENING_DIFFERS', 'warn', (n) => `${n} shelf${n === 1 ? '' : 'ves'} opened with a different quantity than the last closed month ended with.`, c.openingDiffers ?? [])
+  add('OPENING_ESTIMATED', 'info', () => 'Opening stock is estimated (valued at today’s cost price) because the month before is not closed.', c.estimatedOpening && c.estimatedOpening.shelves > 0 ? [{ ref: `${c.estimatedOpening.shelves} shelves`, detail: `worth about ₹${c.estimatedOpening.value}` }] : [])
+  add('UNPRICED_SUPPLY', 'info', (n) => `${n} unit${n === 1 ? '' : 's'} delivered to B2B customers from the warehouse with no price agreed — counted as cost with no sale.`, c.unpricedSupplyUnits > 0 ? [{ ref: 'Direct B2B supplies', detail: `${c.unpricedSupplyUnits} units` }] : [])
   add('B2B_OVER_30', 'bad', (n) => `${n} B2B bill${n === 1 ? ' is' : 's are'} more than 30 days late.`, d.aging.filter((a) => a.bucket === 'Over 30 days late').map((a) => ({ ref: a.order, who: a.customer, detail: `₹${a.outstanding} late ${a.daysLate} days` })))
   return out
 }

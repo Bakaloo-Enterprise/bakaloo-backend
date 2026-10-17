@@ -65,3 +65,35 @@ If the owner wants dashboards to keep counting approved B2B credit sales as sale
 dashboard queries above from `payment_status = 'PAID'` to
 `(payment_status = 'PAID' OR (payment_method = 'B2B_CREDIT' AND b2b_approval_status = 'APPROVED'))`. Cash received is reported
 separately in the Month report ("All money really received") and the `order_money` view.
+
+---
+
+# Profit, stock value and month closing (migration 165)
+
+Local only until deployed. Adds three tables (`accounting_periods`, `period_stock_snapshots`, `accounting_period_log`) and nothing else
+in the database; no existing row is changed.
+
+## What it does
+* **Stock value** — shelves at moving-average cost replayed from `stock_movements`; warehouse (bought, not yet on a shelf) at each
+  purchase's own price. Opening stock is **estimated** (today's `cost_price`) until the month before is closed.
+* **Cost of goods sold and profit** — sales and cost come from the same stock events, so they always cover the same goods;
+  cancelled/returned orders take their sale and cost back. Channel (home / business) split, margin by product and by store.
+* **Wastage** — shelf damage + write-offs + goods thrown away at the door are losses; goods sent back to a supplier are not.
+* **Checks** (shown before closing): stock record vs stock history, warehouse-to-shelf transfers, roll-forward (opening + in − out = closing).
+  The first three block closing.
+* **Month closing** — freezes the report and Excel, stores closing stock as the next opening, writes a log. Only a finished month, in
+  order; reopen the latest only, with a reason.
+
+## Behaviour changes to know about
+* After a month is closed, **a purchase dated in it, a supplier payment dated in it, cancelling a purchase from it, or cancelling a payment from it is refused**
+  ("falls in 2026-09, which is closed").
+* In the month report, a supplier bill is dated **when the goods were received** (not when ordered), so an order placed in one month and
+  received in the next is billed in the next. (The Suppliers screen still shows its own due dates from the order date.)
+
+## Not included in profit
+Delivery cost, store commission, payment-gateway fees, GST and running costs are not recorded in the system, so profit is gross
+profit on goods. Sales are at item prices, before coupons and fees. A customer return or cancellation is valued at the average cost
+at the time of the return (not the original cost).
+
+## Run before relying on a number
+`MONEY_DB_TEST=1 npx vitest run tests/integration/valuation.db.test.js tests/integration/money-foundation.db.test.js` (19 tests, real database).

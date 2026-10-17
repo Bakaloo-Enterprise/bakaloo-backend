@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs'
 import { money, istDate } from '../../utils/business-period.js'
 import { isLossKind, ADJUSTMENT_KINDS, valueOf } from './procurement.rules.js'
 import { settleBills } from './suppliers.rules.js'
-import { AGE_BUCKETS, ageBucket, daysBetween, findExceptions, monthWindow, sumMoney } from './monthly.rules.js'
+import { AGE_BUCKETS, ageBucket, daysBetween, findExceptions, monthBefore, monthWindow, sumMoney } from './monthly.rules.js'
 
 const DEFINITIONS = [
   ['Purchases', 'Every purchase dated in the month that was not cancelled, valued at the agreed total. Goods still “on the way” are listed but are not owed yet.'],
@@ -11,16 +11,26 @@ const DEFINITIONS = [
   ['B2B collected', 'Money recorded against B2B orders (cash, UPI, Razorpay, other) in the month. It comes from the recorded payments, not from the order’s “paid” flag, because credit orders show as paid when placed.'],
   ['Customers owe us', 'Approved B2B bills minus the payments recorded up to the last day of the month. Late = past the due date set on the order.'],
   ['Money received', 'Counts only money that really changed hands: payments recorded against B2B orders, COD cash on delivered orders, and online payments the gateway captured. An order marked “paid” is not enough on its own for B2B credit orders.'],
+  ['Stock value', 'What the goods on shelves and in the warehouse cost us. Shelf stock is valued at the moving average cost from the stock history: goods received come in at the purchase price and blend with what was already there. Warehouse stock (bought, not yet on a shelf) is valued at each purchase’s own price. Opening stock is estimated (at today’s cost price) until the month before is closed; after that it starts from the closed month.'],
+  ['Cost of goods sold', 'The average cost of the goods that left the shelves (or the warehouse hold) to customers, taken from the same stock events as the sales, so sales and cost always cover the same goods. A cancelled or returned order takes its sale and its cost back.'],
+  ['Profit', 'Sales − cost of goods sold = gross profit; wastage and losses come off to give profit after wastage. Sales are at item prices before coupons and fees. It does NOT include delivery cost, store commission, payment-gateway fees, GST or running costs — those are not recorded here.'],
   ['GST', 'GST numbers are only checked for the right shape, not verified. This report does not claim input tax credit.'],
 ]
 
 /** The month-end report: one build, two outputs (a screen preview and an Excel workbook), so they cannot disagree. */
 export class MonthlyService {
-  constructor({ repo, now = () => new Date() }) {
-    Object.assign(this, { repo, now })
+  constructor({ repo, valuation, periods, now = () => new Date() }) {
+    Object.assign(this, { repo, valuation, periods, now })
   }
 
+  /** A closed month is served exactly as it was signed off; an open month is worked out live. */
   async build(month) {
+    const closed = await this.periods.get(month)
+    if (closed) return { ...closed.snapshot, closed: { month, at: closed.closed_at, by: closed.closed_by_name, note: closed.note } }
+    return this.buildLive(month)
+  }
+
+  async buildLive(month) {
     const w = monthWindow(month, this.now())
     const [purchRows, vendors, billsStart, billsEnd, paidStart, paidEnd, credits, payRows, adjRows, doorRows, collRows, salesRows, recvRows, cod, gateway, manualRows] = await Promise.all([
       this.repo.purchases(w.from, w.to), this.repo.vendors(), this.repo.billsAsOf(w.dayBefore, w.start), this.repo.billsAsOf(w.asOf, w.end), this.repo.paidAsOf(w.dayBefore), this.repo.paidAsOf(w.asOf),
@@ -30,7 +40,7 @@ export class MonthlyService {
     ])
 
     const purchases = purchRows.map((r) => ({
-      entryNo: Number(r.entry_no), date: r.date, vendor: r.vendor, product: r.product, ordered: r.expected_qty, received: r.received_qty, bad: r.damaged_qty, accepted: Math.max(0, r.received_qty - r.damaged_qty),
+      entryNo: Number(r.entry_no), date: r.date, billDate: r.bill_date, vendor: r.vendor, product: r.product, ordered: r.expected_qty, received: r.received_qty, bad: r.damaged_qty, accepted: Math.max(0, r.received_qty - r.damaged_qty),
       short: r.status === 'ACTIVE' ? Math.max(0, r.expected_qty - r.received_qty) : 0, owedQty: r.owed_qty, unitPrice: money(r.unit_price), total: money(r.total), status: r.status, invoices: r.invoices, invoiceRef: r.invoice_ref,
     }))
 
@@ -44,7 +54,7 @@ export class MonthlyService {
     const payables = vendors.map((v) => {
       const opening = settleBills(billing(billsStart, v.id), pStart.get(v.id) ?? 0, { creditDays: v.credit_days, today: w.dayBefore })
       const closing = settleBills(billing(billsEnd, v.id), pEnd.get(v.id) ?? 0, { creditDays: v.credit_days, today: w.asOf })
-      const billed = sumMoney(purchRows.filter((p) => p.status === 'ACTIVE' && p.vendor === v.name), (p) => p.total)
+      const billed = sumMoney(purchRows.filter((p) => p.status === 'ACTIVE' && p.vendor === v.name && p.bill_date >= w.from && p.bill_date <= w.to), (p) => p.total)
       const credit = money(cr.get(v.id) ?? 0)
       const paid = money(paidInMonth.get(v.name) ?? 0)
       const expected = Math.round((opening.owed + billed - credit - paid) * 100) / 100
@@ -70,8 +80,10 @@ export class MonthlyService {
     }).filter((a) => a.outstanding >= 0.01).sort((a, b) => b.daysLate - a.daysLate)
     const agingTotals = AGE_BUCKETS.map((bucket) => ({ bucket, orders: aging.filter((a) => a.bucket === bucket).length, amount: sumMoney(aging.filter((a) => a.bucket === bucket), (a) => a.outstanding) }))
 
+    const prev = monthBefore(month)
+    const valuation = await this.valuation.compute(w, (await this.periods.isClosed(prev)) ? prev : null)
     const manualUnpaid = manualRows.map((m) => ({ order: m.order_number, customer: m.customer, date: m.on, total: money(m.total) }))
-    const data = { manualUnpaid, window: { month: w.month, label: w.label, from: w.from, to: w.to, asOf: w.asOf, inProgress: w.inProgress }, purchases, payables, payments, losses, collections, sales, aging, agingTotals }
+    const data = { valuation, checks: valuation.checks, manualUnpaid, window: { month: w.month, label: w.label, from: w.from, to: w.to, asOf: w.asOf, inProgress: w.inProgress }, purchases, payables, payments, losses, collections, sales, aging, agingTotals }
     const summary = {
       purchases: { count: purchases.length, value: sumMoney(purchases, (p) => p.total), onTheWay: purchases.filter((p) => p.status === 'ORDERED').length, receivedUnits: purchases.reduce((n, p) => n + p.received, 0), acceptedUnits: purchases.reduce((n, p) => n + p.accepted, 0) },
       suppliers: { opening: sumMoney(payables, (v) => v.opening), billed: sumMoney(payables, (v) => v.billed), returned: sumMoney(payables, (v) => v.credits), paid: sumMoney(payables, (v) => v.paid), closing: sumMoney(payables, (v) => v.closing), overdue: sumMoney(payables, (v) => v.overdue) },
@@ -81,17 +93,22 @@ export class MonthlyService {
     const moneyIn = { b2b: summary.b2b.collected, cod: money(cod.total), codOrders: cod.n, gateway: money(gateway.total), gatewayPayments: gateway.n }
     moneyIn.total = Math.round((moneyIn.b2b + moneyIn.cod + moneyIn.gateway) * 100) / 100
     summary.moneyIn = moneyIn
+    summary.profit = valuation.profit
+    summary.stock = { ...valuation.stock, rollForward: valuation.rollForward }
     const exceptions = findExceptions(data)
-    return { ...data, summary, exceptions, definitions: DEFINITIONS.map(([term, text]) => ({ term, text })) }
+    return { ...data, summary, exceptions, definitions: DEFINITIONS.map(([term, text]) => ({ term, text })), closed: null }
   }
 
   /** Small version for the screen: the numbers and what needs attention, without every row. */
-  async preview(month) {
-    const d = await this.build(month)
+  async preview(month) { return this.previewOf(await this.build(month)) }
+
+  previewOf(d) {
     return {
-      window: d.window, summary: d.summary, agingTotals: d.agingTotals, definitions: d.definitions,
+      window: d.window, summary: d.summary, agingTotals: d.agingTotals, definitions: d.definitions, closed: d.closed ?? null,
+      topProducts: (d.valuation?.byProduct ?? []).slice(0, 5).map((p) => ({ name: p.name, sales: p.sales, gross: p.gross, marginPct: p.marginPct })),
+      byChannel: d.summary.profit?.channel ?? null,
       exceptions: d.exceptions.map((e) => ({ code: e.code, level: e.level, text: e.text, count: e.rows.length })),
-      counts: { purchases: d.purchases.length, payments: d.payments.length, losses: d.losses.length, collections: d.collections.length, receivables: d.aging.length },
+      counts: { shelves: d.valuation?.byShop.length ?? 0, products: d.valuation?.byProduct.length ?? 0, purchases: d.purchases.length, payments: d.payments.length, losses: d.losses.length, collections: d.collections.length, receivables: d.aging.length },
     }
   }
 
@@ -120,6 +137,8 @@ export class MonthlyService {
     }
     const s = d.summary
     const ws = wb.addWorksheet('Summary')
+    const pf = s.profit
+    const stk = s.stock
     ws.columns = [{ width: 44 }, { width: 20 }, { width: 70 }]
     ws.addRow([`Bakaloo — month-end report: ${d.window.label}`]).font = { bold: true, size: 14 }
     ws.addRow([`Period ${d.window.from} to ${d.window.to}${d.window.inProgress ? ' (month still running — figures are to date)' : ''}. Generated ${istDate(this.now())}.`])
@@ -131,6 +150,9 @@ export class MonthlyService {
       for (const [label, value, note, fmt] of rows) { const r = ws.addRow([label, value, note ?? '']); if (fmt !== false && typeof value === 'number') r.getCell(2).numFmt = fmt ?? INR }
       ws.addRow([])
     }
+    if (d.closed) { const c = ws.addRow([`MONTH CLOSED on ${istDate(new Date(d.closed.at))}${d.closed.by ? ` by ${d.closed.by}` : ''}${d.closed.note ? ` — ${d.closed.note}` : ''}. These figures are frozen as signed off.`]); c.font = { bold: true, color: { argb: 'FF166534' } }; ws.addRow([]) }
+    block('PROFIT', [['Sales (item prices, before coupons and fees)', pf.sales], ['− Cost of goods sold', pf.cogs], ['= Gross profit', pf.gross, pf.marginPct === null ? 'no sales' : `${pf.marginPct}% of sales`], ['− Wastage and losses', pf.loss], ['= Profit after wastage', pf.afterLoss, 'Before delivery, commission, payment fees, GST and running costs'], ['  B2C gross profit', pf.channel.B2C.gross, pf.channel.B2C.marginPct === null ? '' : `${pf.channel.B2C.marginPct}%`], ['  B2B gross profit', pf.channel.B2B.gross, pf.channel.B2B.marginPct === null ? '' : `${pf.channel.B2B.marginPct}%`]])
+    block('STOCK VALUE', [['Opening (shelves + warehouse)', stk.totalOpening, stk.basis === 'CLOSED_MONTH' ? 'From the closed month before' : 'Estimated at today’s cost price'], ['+ Goods received (accepted, at purchase price)', stk.rollForward.goodsReceived], ['+ Other stock added (returns, found)', stk.rollForward.otherAdded], ['− Cost of goods sold', stk.rollForward.costOfGoodsSold], ['− Wastage and losses', stk.rollForward.wastageAndLoss], ['− Sent back to suppliers', stk.rollForward.sentBackToSuppliers], ['± Cost difference moving goods warehouse ↔ shelves', stk.rollForward.movedBetweenWarehouseAndShelves], ['± Unexplained (shelf changes with no record)', stk.rollForward.unexplained], ['= Closing stock value', stk.totalClosing, `shelves ${stk.closingValue} + warehouse ${stk.warehouseClosing}`], ['  Roll-forward difference', stk.rollForward.difference, 'Should be 0']])
     block('PURCHASES', [['Purchases (count)', s.purchases.count, '', '0'], ['Purchase value', s.purchases.value], ['Still on the way (count)', s.purchases.onTheWay, 'Not owed yet', '0'], ['Units received', s.purchases.receivedUnits, '', '0'], ['Units accepted after the quality check', s.purchases.acceptedUnits, '', '0']])
     block('SUPPLIERS', [['We owed at the start of the month', s.suppliers.opening], ['+ Bills received this month', s.suppliers.billed], ['− Credit for goods sent back', s.suppliers.returned], ['− Paid to suppliers', s.suppliers.paid], ['= We owe at the end of the month', s.suppliers.closing], ['  of which late', s.suppliers.overdue]])
     block('WASTAGE AND LOSS', [['Loss (thrown away, damaged, written off)', s.loss.wastage, `${s.loss.units} units`], ['Recovered by sending goods back', s.loss.recovered, 'Not a loss']])
@@ -143,6 +165,17 @@ export class MonthlyService {
     const df = ws.addRow(['HOW THE NUMBERS ARE WORKED OUT']); df.font = { bold: true }
     for (const x of d.definitions) { const r = ws.addRow([x.term, '', x.text]); r.alignment = { wrapText: true, vertical: 'top' } }
 
+    sheet('Margin by product', [
+      { header: 'Product', key: 'name', width: 40 }, { header: 'Units sold', key: 'units', width: 11 }, { header: 'Sales', key: 'sales', fmt: INR }, { header: 'Cost of goods sold', key: 'cogs', fmt: INR }, { header: 'Gross profit', key: 'gross', fmt: INR },
+      { header: 'Margin %', key: 'marginPct', width: 10 }, { header: 'Wastage and loss', key: 'loss', fmt: INR }, { header: 'Stock left (units)', key: 'stockQty', width: 14 }, { header: 'Stock value', key: 'stockValue', fmt: INR },
+    ], d.valuation.byProduct, { totals: ['units', 'sales', 'cogs', 'gross', 'loss', 'stockValue'] })
+    sheet('Margin by store', [
+      { header: 'Store', key: 'name', width: 30 }, { header: 'Stock at start', key: 'openingValue', fmt: INR }, { header: 'Sales', key: 'sales', fmt: INR }, { header: 'Cost of goods sold', key: 'cogs', fmt: INR }, { header: 'Gross profit', key: 'gross', fmt: INR },
+      { header: 'Margin %', key: 'marginPct', width: 10 }, { header: 'Wastage and loss', key: 'loss', fmt: INR }, { header: 'Stock at end', key: 'closingValue', fmt: INR },
+    ], d.valuation.byShop, { totals: ['openingValue', 'sales', 'cogs', 'gross', 'loss', 'closingValue'] })
+    sheet('Warehouse stock', [
+      { header: 'Purchase no.', key: 'entryNo', width: 12 }, { header: 'Product', key: 'product', width: 32 }, { header: 'Supplier', key: 'vendor', width: 26 }, { header: 'Units in warehouse', key: 'units', width: 16 }, { header: 'Price each', key: 'price', fmt: INR }, { header: 'Value', key: 'value', fmt: INR },
+    ], d.valuation.warehouseRows, { totals: ['units', 'value'] })
     sheet('Purchases', [
       { header: 'No.', key: 'entryNo', width: 8 }, { header: 'Date', key: 'date', width: 12 }, { header: 'Supplier', key: 'vendor', width: 24 }, { header: 'Product', key: 'product', width: 28 },
       { header: 'Ordered', key: 'ordered', width: 10 }, { header: 'Received', key: 'received', width: 10 }, { header: 'Bad', key: 'bad', width: 8 }, { header: 'Accepted', key: 'accepted', width: 10 }, { header: 'Short', key: 'short', width: 8 },

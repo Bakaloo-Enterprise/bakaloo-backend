@@ -105,3 +105,7 @@ export const distributeSchema = {
 }
 
 export const monthlySchema = { querystring: { type: 'object', required: ['month'], properties: { month: { type: 'string', pattern: '^\\d{4}-\\d{2}$' } } } }
+
+const monthStr = { type: 'string', pattern: '^\\d{4}-\\d{2}$' }
+export const closeMonthSchema = { body: { type: 'object', required: ['month'], properties: { month: monthStr, note: { type: 'string', maxLength: 300 } } } }
+export const reopenMonthSchema = { body: { type: 'object', required: ['month', 'reason'], properties: { month: monthStr, reason: { type: 'string', minLength: 1, maxLength: 300 } } } }
