@@ -97,3 +97,39 @@ describe('loss vs not loss', () => {
     expect(canCancel({ allocationCount: 0, adjustmentCount: 2 })).toBe(false)
   })
 })
+
+import { checkArrival, checkReceipt } from '../../../src/modules/procurement/procurement.rules.js'
+
+describe('checkReceipt (receiving + quality check)', () => {
+  const ordered = { status: 'ORDERED', expectedQty: 20 }
+  it('the potato example: 20 came, 2 bad and thrown away → 18 accepted', () => {
+    expect(checkReceipt(ordered, { receivedQty: 20, rejectedQty: 2, outcome: 'WASTAGE' })).toMatchObject({ accepted: 18, missing: 0, owedQty: 0, outcome: 'WASTAGE' })
+  })
+  it('short delivery: 17 came, rest is coming → owes 3', () => {
+    expect(checkReceipt(ordered, { receivedQty: 17, restComing: true })).toMatchObject({ missing: 3, owedQty: 3 })
+  })
+  it('short delivery that is not coming is just a shortage, nothing owed', () => {
+    expect(checkReceipt(ordered, { receivedQty: 17 })).toMatchObject({ missing: 3, owedQty: 0 })
+  })
+  it('bad goods that the supplier will replace are owed on top', () => {
+    expect(checkReceipt(ordered, { receivedQty: 18, rejectedQty: 2, outcome: 'REPLACEMENT', restComing: true })).toMatchObject({ missing: 2, owedQty: 4, accepted: 16 })
+  })
+  it.each([
+    [{ receivedQty: 0 }], [{ receivedQty: 5, rejectedQty: 6, outcome: 'WASTAGE' }], [{ receivedQty: 5, rejectedQty: 1 }], [{ receivedQty: 5, rejectedQty: 1, outcome: 'BURN' }],
+  ])('rejects %j', (bad) => { expect(() => checkReceipt(ordered, bad)).toThrow() })
+  it('cannot receive twice or receive a cancelled purchase', () => {
+    expect(() => checkReceipt({ status: 'ACTIVE', expectedQty: 20 }, { receivedQty: 20 })).toThrow()
+    expect(() => checkReceipt({ status: 'CANCELLED', expectedQty: 20 }, { receivedQty: 20 })).toThrow()
+  })
+  it('blocks splitting or adjusting goods that have not arrived', () => {
+    expect(() => checkSplit({ available: 0, purpose: 'RETAIL', destinationShopId: null, status: 'ORDERED' }, [{ shopId: 's', quantity: 1 }])).toThrow(/not arrived/)
+    expect(() => checkAdjustment({ status: 'ORDERED' }, { kind: 'DAMAGE', quantity: 1, reason: 'x' }, { available: 0 })).toThrow(/not arrived/)
+  })
+})
+describe('checkArrival', () => {
+  it('accepts up to what is owed, no more', () => {
+    expect(checkArrival({ status: 'ACTIVE', owedQty: 3 }, 3)).toBe(3)
+    expect(() => checkArrival({ status: 'ACTIVE', owedQty: 3 }, 4)).toThrow()
+    expect(() => checkArrival({ status: 'ACTIVE', owedQty: 0 }, 1)).toThrow()
+  })
+})

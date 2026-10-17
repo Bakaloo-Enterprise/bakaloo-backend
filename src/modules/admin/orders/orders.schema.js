@@ -133,14 +133,40 @@ export const manualOrderSchema = {
           properties: {
             productId: { type: 'string', format: 'uuid' },
             quantity: { type: 'integer', minimum: 1 },
+            // B2B only: the price agreed with the customer for one unit.
+            unitPrice: { type: 'number', minimum: 0, maximum: 99999999 },
           },
         },
       },
+      // B2C = a home customer (COD / manual payment). B2B = a business buying on credit: it becomes an approved
+      // B2B credit order, so it shows in B2B Orders and Collections and is paid by recorded payments.
+      orderType: { type: 'string', enum: ['B2C', 'B2B'], default: 'B2C' },
+      dueDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+      advance: { type: 'object', required: ['amount', 'method'], properties: { amount: { type: 'number', minimum: 0.01 }, method: { type: 'string', enum: ['CASH', 'UPI'] } } },
       paymentMethod: { type: 'string', enum: ['COD', 'MANUAL'], default: 'MANUAL' },
+      // The store that delivers the order. Optional only when one store is the obvious choice.
+      shopId: { type: 'string', format: 'uuid' },
+      // MANUAL only: true = the money is already in hand. Otherwise the order stays unpaid until someone marks it paid.
+      paymentReceived: { type: 'boolean', default: false },
       deliveryAddress: { type: 'object' },
       couponCode: { type: 'string' },
     },
   },
+}
+
+export const customerLookupSchema = { tags: ['Admin Orders'], summary: 'Find customers for a manual order', querystring: { type: 'object', properties: { search: { type: 'string', maxLength: 60 } } } }
+
+export const staffCustomerSchema = {
+  tags: ['Admin Orders'],
+  summary: 'Add a customer who is not on the platform yet',
+  body: { type: 'object', required: ['name', 'phone'], properties: { name: { type: 'string', maxLength: 100 }, phone: { type: 'string', maxLength: 20 }, kind: { type: 'string', enum: ['HOME', 'BUSINESS'], default: 'HOME' }, businessName: { type: 'string', maxLength: 160 }, gstin: { type: 'string', maxLength: 20 } } },
+}
+
+export const markManualPaidSchema = {
+  tags: ['Admin Orders'],
+  summary: 'Say the money for a manual order has been received',
+  params: uuidParam,
+  body: { type: 'object', properties: { note: { type: 'string', maxLength: 200 } } },
 }
 
 export const invoiceSchema = { tags: ['Admin Orders'], summary: 'Download PDF invoice', params: uuidParam }

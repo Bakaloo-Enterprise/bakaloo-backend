@@ -17,12 +17,14 @@ export async function withTransaction(fn) {
   }
 }
 
+const VENDOR_COLS = `v.trade_name, v.gstin, v.address, v.contact_person, v.payment_terms, v.credit_days, v.upi_id, v.bank_name, v.bank_account_no, v.bank_ifsc`
 const ENTRY_SELECT = `
   e.id, e.entry_no, e.product_id, e.vendor_id, e.unit, e.expected_qty, e.received_qty, e.damaged_qty, e.unit_price, e.purchase_total,
   to_char(e.procured_on, 'YYYY-MM-DD') AS procured_on, e.invoice_ref, e.receiving_note, e.destination_shop_id, e.purpose, e.business_account_id, e.reservation_note,
-  e.status, e.created_by, e.created_at,
+  e.status, e.created_by, e.created_at, e.owed_qty, e.received_at,
+  (SELECT COUNT(*) FROM procurement_documents d WHERE d.entry_id = e.id AND d.kind = 'INVOICE')::int AS invoice_count,
   p.name AS product_name, p.sku AS product_sku, v.name AS vendor_name, ds.name AS destination_name, b.company_name AS business_name,
-  COALESCE(al.qty, 0)::int AS allocated, COALESCE(ca.qty, 0)::int AS central_adjusted`
+  COALESCE(al.qty, 0)::int AS allocated, COALESCE(ca.qty, 0)::int AS central_adjusted, COALESCE(rv.qty, 0)::int AS reserved`
 const ENTRY_FROM = `
   FROM procurement_entries e
   JOIN products p ON p.id = e.product_id
@@ -30,7 +32,8 @@ const ENTRY_FROM = `
   LEFT JOIN shops ds ON ds.id = e.destination_shop_id
   LEFT JOIN business_accounts b ON b.id = e.business_account_id
   LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_allocations WHERE entry_id = e.id AND status = 'APPLIED') al ON TRUE
-  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_adjustments WHERE entry_id = e.id AND shop_id IS NULL) ca ON TRUE`
+  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM procurement_adjustments WHERE entry_id = e.id AND shop_id IS NULL) ca ON TRUE
+  LEFT JOIN LATERAL (SELECT SUM(quantity) AS qty FROM b2b_reservations WHERE entry_id = e.id AND status = 'RESERVED') rv ON TRUE`
 
 export class ProcurementRepository {
   stock = new ShopProductsRepository()
@@ -38,7 +41,7 @@ export class ProcurementRepository {
   // ─── vendors ───
   async vendors({ includeInactive = false } = {}) {
     const { rows } = await query(
-      `SELECT v.id, v.name, v.phone, v.notes, v.is_active, v.created_at,
+      `SELECT v.id, v.name, v.phone, v.notes, v.is_active, v.created_at, ${VENDOR_COLS},
               COUNT(e.id) FILTER (WHERE e.status = 'ACTIVE')::int AS entries
          FROM vendors v LEFT JOIN procurement_entries e ON e.vendor_id = v.id
         WHERE ($1 OR v.is_active) GROUP BY v.id ORDER BY LOWER(v.name)`,
@@ -47,24 +50,98 @@ export class ProcurementRepository {
     return rows
   }
   async vendorById(id, client) {
-    return ((client ?? { query }).query(`SELECT id, name, is_active FROM vendors WHERE id = $1`, [id])).then((r) => r.rows[0] ?? null)
+    return ((client ?? { query }).query(`SELECT v.id, v.name, v.phone, v.notes, v.is_active, v.created_at, ${VENDOR_COLS} FROM vendors v WHERE v.id = $1`, [id])).then((r) => r.rows[0] ?? null)
   }
   async vendorByName(name, client) {
     return ((client ?? { query }).query(`SELECT id, name, is_active FROM vendors WHERE LOWER(name) = LOWER($1)`, [name])).then((r) => r.rows[0] ?? null)
   }
-  async createVendor({ name, phone, notes }, actorId, client) {
+  async createVendor({ name, phone, notes, ...profile }, actorId, client) {
     const { rows } = await (client ?? { query }).query(
-      `INSERT INTO vendors (name, phone, notes, created_by) VALUES ($1,$2,$3,$4) RETURNING id, name, phone, notes, is_active, created_at`,
-      [name, phone ?? null, notes ?? null, actorId],
+      `INSERT INTO vendors (name, phone, notes, created_by, trade_name, gstin, address, contact_person, payment_terms, credit_days, upi_id, bank_name, bank_account_no, bank_ifsc)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,'CASH'),COALESCE($10,0),$11,$12,$13,$14) RETURNING id, name`,
+      [name, phone ?? null, notes ?? null, actorId, profile.tradeName ?? null, profile.gstin ?? null, profile.address ?? null, profile.contactPerson ?? null,
+        profile.paymentTerms ?? null, profile.creditDays ?? null, profile.upiId ?? null, profile.bankName ?? null, profile.bankAccountNo ?? null, profile.bankIfsc ?? null],
     )
-    return rows[0]
+    return this.vendorById(rows[0].id, client)
   }
-  async updateVendor(id, { name, phone, notes, isActive }) {
+  /** `undefined` leaves a column alone; `null` clears it. */
+  async updateVendor(id, patch) {
+    const cols = { name: 'name', phone: 'phone', notes: 'notes', isActive: 'is_active', tradeName: 'trade_name', gstin: 'gstin', address: 'address', contactPerson: 'contact_person',
+      paymentTerms: 'payment_terms', creditDays: 'credit_days', upiId: 'upi_id', bankName: 'bank_name', bankAccountNo: 'bank_account_no', bankIfsc: 'bank_ifsc' }
+    const sets = []
+    const p = [id]
+    for (const [k, col] of Object.entries(cols)) if (patch[k] !== undefined) { p.push(patch[k]); sets.push(`${col} = $${p.length}`) }
+    if (sets.length === 0) return this.vendorById(id)
+    const { rowCount } = await query(`UPDATE vendors SET ${sets.join(', ')} WHERE id = $1`, p)
+    return rowCount ? this.vendorById(id) : null
+  }
+
+  // ─── supplier money ───
+  /** Bills = received purchases, each with the credit for goods sent back (VENDOR_RETURN at the price we paid). */
+  async bills(vendorId) {
     const { rows } = await query(
-      `UPDATE vendors SET name = COALESCE($2, name), phone = COALESCE($3, phone), notes = COALESCE($4, notes), is_active = COALESCE($5, is_active)
-        WHERE id = $1 RETURNING id, name, phone, notes, is_active, created_at`,
-      [id, name ?? null, phone ?? null, notes ?? null, isActive ?? null],
-    )
+      `SELECT e.id, e.entry_no, e.vendor_id, to_char(e.procured_on, 'YYYY-MM-DD') AS procured_on, e.purchase_total AS total, p.name AS product_name, e.invoice_ref,
+              COALESCE((SELECT SUM(a.quantity * a.unit_cost) FROM procurement_adjustments a WHERE a.entry_id = e.id AND a.kind = 'VENDOR_RETURN'), 0)::numeric(14,2) AS credit,
+              (SELECT COUNT(*) FROM procurement_documents d WHERE d.entry_id = e.id AND d.kind = 'INVOICE')::int AS invoice_count
+         FROM procurement_entries e JOIN products p ON p.id = e.product_id
+        WHERE e.status = 'ACTIVE' AND ($1::uuid IS NULL OR e.vendor_id = $1) ORDER BY e.procured_on, e.entry_no`, [vendorId ?? null])
+    return rows
+  }
+  async onTheWay(vendorId) {
+    const { rows } = await query(
+      `SELECT e.vendor_id, COUNT(*)::int AS n, COALESCE(SUM(e.purchase_total), 0)::numeric(14,2) AS value
+         FROM procurement_entries e WHERE e.status = 'ORDERED' AND ($1::uuid IS NULL OR e.vendor_id = $1) GROUP BY e.vendor_id`, [vendorId ?? null])
+    return rows
+  }
+  async paymentTotals() {
+    const { rows } = await query(`SELECT vendor_id, SUM(amount)::numeric(14,2) AS total FROM vendor_payments WHERE voided_at IS NULL GROUP BY vendor_id`)
+    return rows
+  }
+  async payments(vendorId, { limit = 50 } = {}) {
+    const { rows } = await query(
+      `SELECT y.id, y.amount, y.method, to_char(y.paid_on, 'YYYY-MM-DD') AS paid_on, y.reference, y.note, y.created_at, y.voided_at, y.void_reason, u.name AS actor_name
+         FROM vendor_payments y LEFT JOIN users u ON u.id = y.created_by WHERE y.vendor_id = $1 ORDER BY y.paid_on DESC, y.created_at DESC LIMIT ${Number(limit)}`, [vendorId])
+    return rows
+  }
+  async paidTotal(client, vendorId) {
+    const { rows } = await client.query(`SELECT COALESCE(SUM(amount), 0)::numeric(14,2) AS total FROM vendor_payments WHERE vendor_id = $1 AND voided_at IS NULL`, [vendorId])
+    return rows[0].total
+  }
+  async lockVendor(client, id) {
+    const { rows } = await client.query(`SELECT id, name, is_active FROM vendors WHERE id = $1 FOR UPDATE`, [id])
+    return rows[0] ?? null
+  }
+  async insertPayment(client, { vendorId, amount, method, paidOn, reference, note, actorId }) {
+    const { rows } = await client.query(
+      `INSERT INTO vendor_payments (vendor_id, amount, method, paid_on, reference, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [vendorId, amount, method, paidOn, reference ?? null, note ?? null, actorId])
+    return rows[0].id
+  }
+  async paymentById(client, id) {
+    const { rows } = await client.query(`SELECT id, vendor_id, amount, voided_at FROM vendor_payments WHERE id = $1 FOR UPDATE`, [id])
+    return rows[0] ?? null
+  }
+  async voidPayment(client, id, { actorId, reason }) {
+    await client.query(`UPDATE vendor_payments SET voided_at = NOW(), voided_by = $2, void_reason = $3 WHERE id = $1`, [id, actorId, reason])
+  }
+
+  // ─── documents ───
+  async documents(entryId) {
+    const { rows } = await query(`SELECT id, kind, file_name, mime_type, size_bytes, created_at FROM procurement_documents WHERE entry_id = $1 ORDER BY created_at`, [entryId])
+    return rows
+  }
+  async insertDocument(client, { entryId, kind, fileName, mime, size, data, actorId }) {
+    const { rows } = await client.query(
+      `INSERT INTO procurement_documents (entry_id, kind, file_name, mime_type, size_bytes, data, uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [entryId, kind, fileName, mime, size, data, actorId])
+    return rows[0].id
+  }
+  async documentFile(id) {
+    const { rows } = await query(`SELECT id, entry_id, file_name, mime_type, data FROM procurement_documents WHERE id = $1`, [id])
+    return rows[0] ?? null
+  }
+  async deleteDocument(client, id) {
+    const { rows } = await client.query(`DELETE FROM procurement_documents WHERE id = $1 RETURNING entry_id, kind, file_name`, [id])
     return rows[0] ?? null
   }
 
@@ -86,10 +163,10 @@ export class ProcurementRepository {
   async insertEntry(client, d) {
     const { rows } = await client.query(
       `INSERT INTO procurement_entries (product_id, vendor_id, unit, expected_qty, received_qty, damaged_qty, unit_price, purchase_total, procured_on,
-                                        invoice_ref, receiving_note, destination_shop_id, purpose, business_account_id, reservation_note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+                                        invoice_ref, receiving_note, destination_shop_id, purpose, business_account_id, reservation_note, created_by, status, received_at, received_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::varchar,CASE WHEN $17::varchar = 'ORDERED' THEN NULL ELSE NOW() END,CASE WHEN $17::varchar = 'ORDERED' THEN NULL ELSE $16::uuid END) RETURNING id`,
       [d.productId, d.vendorId, d.unit ?? null, d.expectedQty, d.receivedQty, d.damagedQty, d.unitPrice, d.purchaseTotal, d.procuredOn,
-        d.invoiceRef ?? null, d.receivingNote ?? null, d.destinationShopId ?? null, d.purpose, d.businessAccountId ?? null, d.reservationNote ?? null, d.createdBy],
+        d.invoiceRef ?? null, d.receivingNote ?? null, d.destinationShopId ?? null, d.purpose, d.businessAccountId ?? null, d.reservationNote ?? null, d.createdBy, d.status ?? 'ACTIVE'],
     )
     return rows[0].id
   }
@@ -105,7 +182,7 @@ export class ProcurementRepository {
     return this.entry(id, client)
   }
 
-  async list({ from, to, vendorId, productId, shopId, status, purpose, search, limit = 25, offset = 0 }) {
+  async list({ from, to, vendorId, productId, shopId, status, owed, purpose, search, limit = 25, offset = 0 }) {
     const where = ['TRUE']
     const p = []
     const add = (sql, v) => { p.push(v); where.push(sql.replaceAll('$$', `$${p.length}`)) }
@@ -114,6 +191,7 @@ export class ProcurementRepository {
     if (vendorId) add('e.vendor_id = $$', vendorId)
     if (productId) add('e.product_id = $$', productId)
     if (status) add('e.status = $$', status)
+    if (owed) where.push('e.owed_qty > 0')
     if (purpose) add('e.purpose = $$', purpose)
     if (shopId) add(`(e.destination_shop_id = $$ OR EXISTS (SELECT 1 FROM procurement_allocations a WHERE a.entry_id = e.id AND a.shop_id = $$ AND a.status = 'APPLIED'))`, shopId)
     if (search) add(`(p.name ILIKE '%' || $$ || '%' OR e.invoice_ref ILIKE '%' || $$ || '%' OR e.entry_no::text = $$)`, search)
@@ -194,8 +272,17 @@ export class ProcurementRepository {
   async counts(client, entryId) {
     const { rows } = await client.query(
       `SELECT (SELECT COUNT(*) FROM procurement_allocations WHERE entry_id = $1)::int AS allocation_count,
-              (SELECT COUNT(*) FROM procurement_adjustments WHERE entry_id = $1)::int AS adjustment_count`, [entryId])
-    return { allocationCount: rows[0].allocation_count, adjustmentCount: rows[0].adjustment_count }
+              (SELECT COUNT(*) FROM procurement_adjustments WHERE entry_id = $1)::int AS adjustment_count,
+              (SELECT COUNT(*) FROM b2b_reservations WHERE entry_id = $1 AND status = 'RESERVED')::int AS reservation_count`, [entryId])
+    return { allocationCount: rows[0].allocation_count, adjustmentCount: rows[0].adjustment_count, reservationCount: rows[0].reservation_count }
+  }
+  async markReceived(client, id, { receivedQty, damagedQty, owedQty, note, userId }) {
+    await client.query(
+      `UPDATE procurement_entries SET status = 'ACTIVE', received_qty = $2, damaged_qty = $3, owed_qty = $4, receiving_note = COALESCE($5, receiving_note),
+              received_at = NOW(), received_by = $6, updated_at = NOW() WHERE id = $1`, [id, receivedQty, damagedQty, owedQty, note ?? null, userId])
+  }
+  async addArrival(client, id, quantity) {
+    await client.query(`UPDATE procurement_entries SET received_qty = received_qty + $2, owed_qty = owed_qty - $2, updated_at = NOW() WHERE id = $1`, [id, quantity])
   }
   async setStatus(client, id, status) {
     await client.query(`UPDATE procurement_entries SET status = $2, updated_at = NOW() WHERE id = $1`, [id, status])

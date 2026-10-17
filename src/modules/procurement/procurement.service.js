@@ -3,7 +3,8 @@ import { istDate, money, parsePeriod } from '../../utils/business-period.js'
 import { emitInTx } from '../../utils/audit-log.js'
 import { invalidateCatalogCaches } from '../catalog-bulk/catalog-cache.js'
 import { withTransaction } from './procurement.repository.js'
-import { ADJUSTMENT_KINDS, canCancel, checkAdjustment, checkSplit, entryFigures, isLossKind, normalizeEntry, valueOf } from './procurement.rules.js'
+import { cleanVendorProfile, maskAccount } from './suppliers.rules.js'
+import { ADJUSTMENT_KINDS, REJECT_OUTCOMES, canCancel, checkAdjustment, checkArrival, checkReceipt, checkSplit, entryFigures, isLossKind, normalizeEntry, valueOf } from './procurement.rules.js'
 
 /**
  * Procurement (Phase 12): what was bought, from whom, at what cost → split across stores → why quantities differ.
@@ -18,26 +19,38 @@ export class ProcurementService {
   today() { return istDate(this.now()) }
 
   // ─── vendors ───
-  vendors(q = {}) { return this.repo.vendors({ includeInactive: Boolean(q.includeInactive) }) }
+  /** UPI and bank details are only shown to people who may manage procurement; the account number is masked anyway. */
+  vendorShape(v, canSeePay = false) {
+    return {
+      id: v.id, name: v.name, phone: v.phone, notes: v.notes, is_active: v.is_active, created_at: v.created_at, entries: v.entries,
+      tradeName: v.trade_name, gstin: v.gstin, address: v.address, contactPerson: v.contact_person, paymentTerms: v.payment_terms, creditDays: v.credit_days,
+      upiId: canSeePay ? v.upi_id : null, bankName: canSeePay ? v.bank_name : null, bankIfsc: canSeePay ? v.bank_ifsc : null, bankAccountMasked: canSeePay ? maskAccount(v.bank_account_no) : null,
+      hasPayDetails: Boolean(v.upi_id || v.bank_account_no),
+    }
+  }
+  async vendors(q = {}, canSeePay = false) { return (await this.repo.vendors({ includeInactive: Boolean(q.includeInactive) })).map((v) => this.vendorShape(v, canSeePay)) }
   async createVendor(input, actorId) {
     const name = String(input.name ?? '').trim()
     if (name.length < 2) throw new BusinessError('Vendor name needs at least 2 letters.', 400, 'VALIDATION', { name: 'Too short' })
     if (await this.repo.vendorByName(name)) throw new BusinessError('A vendor with that name already exists.', 409, 'VENDOR_EXISTS')
-    return this.repo.createVendor({ ...input, name }, actorId)
+    const v = await this.repo.createVendor({ name, phone: input.phone, notes: input.notes, ...cleanVendorProfile(input) }, actorId)
+    return this.vendorShape(v, true)
   }
   async updateVendor(id, input) {
     if (input.name !== undefined) {
       const clash = await this.repo.vendorByName(String(input.name).trim())
       if (clash && clash.id !== id) throw new BusinessError('A vendor with that name already exists.', 409, 'VENDOR_EXISTS')
     }
-    const v = await this.repo.updateVendor(id, { ...input, name: input.name?.trim() })
+    const v = await this.repo.updateVendor(id, { name: input.name?.trim(), phone: input.phone, notes: input.notes, isActive: input.isActive, ...cleanVendorProfile(input) })
     if (!v) throw new BusinessError('Vendor not found.', 404, 'VENDOR_NOT_FOUND')
-    return v
+    return this.vendorShape(v, true)
   }
 
   // ─── entries ───
   async createEntry(input, actor) {
-    const n = normalizeEntry(input, { today: this.today() })
+    // "On the way" purchases are priced on what was ordered; the counted figures come with the receiving check.
+    const ordered = input.ordered === true
+    const n = normalizeEntry(ordered ? { ...input, receivedQty: input.expectedQty, damagedQty: 0 } : input, { today: this.today() })
     const product = await this.repo.product(input.productId)
     if (!product) throw new BusinessError('Product not found.', 404, 'PRODUCT_NOT_FOUND')
     if (input.destinationShopId) {
@@ -46,10 +59,10 @@ export class ProcurementService {
     }
     if (input.businessAccountId && !(await this.repo.businessAccount(input.businessAccountId))) throw new BusinessError('Business account not found.', 404, 'ACCOUNT_NOT_FOUND')
 
-    return this.detail(await this.#create(input, n, product, actor))
+    return this.detail(await this.#create(input, n, product, actor, ordered))
   }
 
-  async #create(input, n, product, actor) {
+  async #create(input, n, product, actor, ordered = false) {
     return withTransaction(async (client) => {
       let vendor = input.vendorId ? await this.repo.vendorById(input.vendorId, client) : null
       if (input.vendorId && !vendor) throw new BusinessError('Vendor not found.', 404, 'VENDOR_NOT_FOUND')
@@ -61,16 +74,18 @@ export class ProcurementService {
       const id = await this.repo.insertEntry(client, {
         ...n, productId: input.productId, vendorId: vendor.id, unit: input.unit ?? product.net_quantity ?? null, invoiceRef: input.invoiceRef,
         receivingNote: input.receivingNote, destinationShopId: input.destinationShopId, businessAccountId: input.businessAccountId,
-        reservationNote: input.reservationNote, createdBy: actor.userId,
+        reservationNote: input.reservationNote, createdBy: actor.userId, status: ordered ? 'ORDERED' : 'ACTIVE',
       })
-      await this.repo.logEvent(client, id, actor.userId, 'CREATED', { received: n.receivedQty, expected: n.expectedQty, damaged: n.damagedQty, unitPrice: n.unitPrice, total: n.purchaseTotal, purpose: n.purpose, vendor: vendor.name })
+      await this.repo.logEvent(client, id, actor.userId, ordered ? 'ORDERED' : 'CREATED', { received: n.receivedQty, expected: n.expectedQty, damaged: n.damagedQty, unitPrice: n.unitPrice, total: n.purchaseTotal, purpose: n.purpose, vendor: vendor.name })
       await emitInTx(client, 'procurement.entry.create', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: id, after: { productId: input.productId, vendorId: vendor.id, ...n } })
       return id
     })
   }
 
+  figures(e) { return this.#figures(e) }
+
   #figures(e) {
-    const f = entryFigures({ expectedQty: e.expected_qty, receivedQty: e.received_qty, damagedQty: e.damaged_qty }, { allocated: e.allocated, centralAdjusted: e.central_adjusted })
+    const f = entryFigures({ expectedQty: e.expected_qty, receivedQty: e.received_qty, damagedQty: e.damaged_qty }, { allocated: e.allocated, centralAdjusted: e.central_adjusted, reserved: e.reserved })
     return { ...f, purchaseTotal: money(e.purchase_total), unitPrice: money(e.unit_price) }
   }
 
@@ -81,7 +96,7 @@ export class ProcurementService {
       invoiceRef: e.invoice_ref, receivingNote: e.receiving_note, status: e.status, purpose: e.purpose,
       destination: e.destination_shop_id ? { id: e.destination_shop_id, name: e.destination_name } : null,
       reservedFor: e.purpose === 'B2B_RESERVED' ? { businessAccountId: e.business_account_id, businessName: e.business_name, note: e.reservation_note } : null,
-      createdAt: e.created_at, ...this.#figures(e),
+      createdAt: e.created_at, reserved: e.reserved, invoiceCount: e.invoice_count, owedQty: e.owed_qty, receivedAt: e.received_at, ...this.#figures(e),
     }
   }
 
@@ -95,7 +110,7 @@ export class ProcurementService {
   async detail(id) {
     const e = await this.repo.entry(id)
     if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
-    const [allocations, adjustments, events] = await Promise.all([this.repo.allocations(id), this.repo.adjustments(id), this.repo.events(id)])
+    const [allocations, adjustments, events, documents] = await Promise.all([this.repo.allocations(id), this.repo.adjustments(id), this.repo.events(id), this.repo.documents(id)])
     return {
       ...this.#shape(e),
       allocations: allocations.map((a) => ({ id: a.id, shopId: a.shop_id, shopName: a.shop_name, quantity: a.quantity, status: a.status, note: a.note, at: a.created_at, reversedAt: a.reversed_at })),
@@ -103,8 +118,45 @@ export class ProcurementService {
         id: a.id, kind: a.kind, label: ADJUSTMENT_KINDS[a.kind].label, quantity: a.quantity, shopId: a.shop_id, shopName: a.shop_name, reason: a.reason, by: a.actor_name, at: a.created_at,
         value: valueOf(a.quantity, a.unit_cost), loss: isLossKind(a.kind),
       })),
+      documents: documents.map((d) => ({ id: d.id, kind: d.kind, fileName: d.file_name, mime: d.mime_type, size: d.size_bytes, at: d.created_at })),
       history: events.map((v) => ({ kind: v.kind, detail: v.detail, by: v.actor_name, at: v.created_at })),
     }
+  }
+
+  // ─── receiving + quality check ───
+  /**
+   * Count and check goods that were ordered. Accepted goods become usable stock; rejected goods are thrown away
+   * (a loss), sent back or replaced (recovered cost, not a loss). Nothing here touches store stock — that still
+   * happens when the manager sends usable goods to stores.
+   */
+  async receive(entryId, input, actor) {
+    await withTransaction(async (client) => {
+      const e = await this.repo.lockEntry(client, entryId)
+      if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
+      const r = checkReceipt({ status: e.status, expectedQty: e.expected_qty }, input)
+      const wasted = r.outcome === 'WASTAGE' ? r.rejectedQty : 0
+      await this.repo.markReceived(client, entryId, { receivedQty: r.receivedQty, damagedQty: wasted, owedQty: r.owedQty, note: input.note?.trim() || null, userId: actor.userId })
+      if (r.rejectedQty > 0 && r.outcome !== 'WASTAGE') {
+        await this.repo.insertAdjustment(client, { entryId, kind: 'VENDOR_RETURN', quantity: r.rejectedQty, shopId: null, movementId: null, unitCost: r.outcome === 'REPLACEMENT' ? 0 : e.unit_price, reason: `Rejected on receiving — ${REJECT_OUTCOMES[r.outcome].label.toLowerCase()}`, actorId: actor.userId })
+      }
+      const detail = { ordered: e.expected_qty, received: r.receivedQty, accepted: r.accepted, rejected: r.rejectedQty, outcome: r.outcome, short: r.missing, owed: r.owedQty }
+      await this.repo.logEvent(client, entryId, actor.userId, 'RECEIVED', detail)
+      await emitInTx(client, 'procurement.receive', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: detail })
+    })
+    return this.detail(entryId)
+  }
+
+  /** The supplier brings what it owed (the short part or a replacement). */
+  async arrive(entryId, quantity, actor) {
+    await withTransaction(async (client) => {
+      const e = await this.repo.lockEntry(client, entryId)
+      if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
+      const q = checkArrival({ status: e.status, owedQty: e.owed_qty }, quantity)
+      await this.repo.addArrival(client, entryId, q)
+      await this.repo.logEvent(client, entryId, actor.userId, 'ARRIVED_LATER', { quantity: q, stillOwed: e.owed_qty - q })
+      await emitInTx(client, 'procurement.arrive', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: { quantity: q } })
+    })
+    return this.detail(entryId)
   }
 
   // ─── split across stores ───
@@ -112,31 +164,37 @@ export class ProcurementService {
     const touched = await withTransaction(async (client) => {
       const e = await this.repo.lockEntry(client, entryId)
       if (!e) throw new BusinessError('Purchase not found.', 404, 'ENTRY_NOT_FOUND')
-      const fig = this.#figures(e)
-      const rows = checkSplit({ available: fig.available, purpose: e.purpose, destinationShopId: e.destination_shop_id, status: e.status }, allocations)
-      const out = []
-      for (const r of rows) {
-        const shop = await this.repo.shop(r.shopId, client)
-        if (!shop || !shop.is_active) throw new BusinessError(`${shop?.name ?? 'That store'} is not active.`, 409, 'SHOP_INACTIVE')
-        const sp = await this.repo.ensureShopProduct(client, r.shopId, e.product_id)
-        if (!sp) throw new BusinessError(`${e.product_name} was removed from ${shop.name}. Add it back first.`, 409, 'PRODUCT_REMOVED_FROM_STORE')
-        let movement
-        try {
-          movement = await this.repo.applyStock(client, {
-            shopProductId: sp.id, delta: r.quantity, type: 'PROCUREMENT_RECEIPT', reason: `Procurement #${e.entry_no} (${e.vendor_name})`,
-            actor: { userId: actor.userId }, metadata: { procurementEntryId: e.id, entryNo: Number(e.entry_no) },
-          })
-        } catch (err) { throw this.#stockError(err) }
-        if (updateCostPrice) await this.repo.setCostPrice(client, sp.id, e.unit_price)
-        const allocId = await this.repo.insertAllocation(client, { entryId, shopId: r.shopId, shopProductId: sp.id, quantity: r.quantity, movementId: movement.id, note, actorId: actor.userId })
-        out.push({ allocationId: allocId, shopId: r.shopId, shopName: shop.name, quantity: r.quantity })
-      }
-      await this.repo.logEvent(client, entryId, actor.userId, 'ALLOCATED', { split: out.map((o) => ({ shop: o.shopName, quantity: o.quantity })), updateCostPrice })
-      await emitInTx(client, 'procurement.allocate', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: { split: out } })
-      return { shopIds: out.map((o) => o.shopId), productId: e.product_id }
+      return this.applySplit(client, e, allocations, { note, updateCostPrice }, actor)
     })
     await invalidateCatalogCaches({ shopIds: touched.shopIds, productIds: [touched.productId] })
     return this.detail(entryId)
+  }
+
+  /** Send stock to stores inside the caller's transaction. `e` is the locked entry with live figures. */
+  async applySplit(client, e, allocations, { note, updateCostPrice = true }, actor) {
+    const entryId = e.id
+    const fig = this.#figures(e)
+    const rows = checkSplit({ available: fig.available, purpose: e.purpose, destinationShopId: e.destination_shop_id, status: e.status }, allocations)
+    const out = []
+    for (const r of rows) {
+      const shop = await this.repo.shop(r.shopId, client)
+      if (!shop || !shop.is_active) throw new BusinessError(`${shop?.name ?? 'That store'} is not active.`, 409, 'SHOP_INACTIVE')
+      const sp = await this.repo.ensureShopProduct(client, r.shopId, e.product_id)
+      if (!sp) throw new BusinessError(`${e.product_name} was removed from ${shop.name}. Add it back first.`, 409, 'PRODUCT_REMOVED_FROM_STORE')
+      let movement
+      try {
+        movement = await this.repo.applyStock(client, {
+          shopProductId: sp.id, delta: r.quantity, type: 'PROCUREMENT_RECEIPT', reason: `Procurement #${e.entry_no} (${e.vendor_name})`,
+          actor: { userId: actor.userId }, metadata: { procurementEntryId: e.id, entryNo: Number(e.entry_no) },
+        })
+      } catch (err) { throw this.#stockError(err) }
+      if (updateCostPrice) await this.repo.setCostPrice(client, sp.id, e.unit_price)
+      const allocId = await this.repo.insertAllocation(client, { entryId, shopId: r.shopId, shopProductId: sp.id, quantity: r.quantity, movementId: movement.id, note, actorId: actor.userId })
+      out.push({ allocationId: allocId, shopId: r.shopId, shopName: shop.name, quantity: r.quantity })
+    }
+    await this.repo.logEvent(client, entryId, actor.userId, 'ALLOCATED', { split: out.map((o) => ({ shop: o.shopName, quantity: o.quantity })), updateCostPrice })
+    await emitInTx(client, 'procurement.allocate', { actor_user_id: actor.userId, actor_role: 'ADMIN', target_type: 'procurement_entry', target_id: entryId, after: { split: out } })
+    return { shopIds: out.map((o) => o.shopId), productId: e.product_id }
   }
 
   async reverseAllocation(allocationId, actor) {

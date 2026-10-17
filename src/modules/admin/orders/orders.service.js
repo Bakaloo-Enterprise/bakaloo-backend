@@ -492,6 +492,8 @@ export class AdminOrdersService {
 
   async createManualOrder(data, adminId, ip) {
     const order = await this.repository.createManualOrder({ ...data, adminId })
+    await this.repository.invalidateStockCaches?.(order)
+    delete order._touched
     logAdminActivity(adminId, `Created manual order ${order.order_number}`, 'order', order.id,
       null, { order_number: order.order_number, total: order.total_amount }, ip)
     // Rider assignment resolves at PACKED, same as every other order — a
@@ -502,6 +504,54 @@ export class AdminOrdersService {
       await this.riderAssignmentResolver.resolveAndFinalize(order.id, { trigger: 'ADMIN_MANUAL_ORDER' })
     }
     return order
+  }
+
+  /** Customers for the Create Order screen, with business / not-on-the-app labels. */
+  async customerLookup(search) {
+    const rows = await this.repository.customerLookup(search)
+    return rows.map((r) => ({
+      id: r.id, name: r.name, phone: r.phone, orderCount: r.order_count,
+      kind: r.business_status === 'APPROVED' ? 'BUSINESS' : r.staff_business_name ? 'BUSINESS' : 'HOME',
+      businessName: r.company_name || r.staff_business_name || null, gstin: r.staff_business_gstin || null,
+      hasBusinessAccount: r.business_status === 'APPROVED', addedByStaff: r.added_by_staff, notOnApp: r.not_on_app,
+    }))
+  }
+
+  /** Add a customer who is not on the platform yet (name + phone; a business also gets its name and optional GST number). */
+  async createCustomerByStaff(input, adminId, ip) {
+    const name = String(input.name ?? '').trim()
+    if (name.length < 2) throw { statusCode: 400, message: 'Write the customer’s name.' }
+    const { cleanPhone } = await import('../../procurement/requirements.rules.js')
+    let phone
+    try { phone = cleanPhone(input.phone) } catch { throw { statusCode: 400, message: 'That phone number does not look right.' } }
+    if (!phone || phone.length !== 10) throw { statusCode: 400, message: 'Enter the 10-digit mobile number.' }
+    const isBusiness = input.kind === 'BUSINESS'
+    const businessName = isBusiness ? String(input.businessName ?? '').trim() : ''
+    if (isBusiness && businessName.length < 2) throw { statusCode: 400, message: 'Write the business name.' }
+    let gstin = null
+    if (isBusiness && String(input.gstin ?? '').trim()) {
+      const { cleanVendorProfile } = await import('../../procurement/suppliers.rules.js')
+      try { gstin = cleanVendorProfile({ gstin: input.gstin }).gstin } catch (e) { throw { statusCode: 400, message: e.message } }
+    }
+    const made = await this.repository.createCustomerByStaff({ name, phone, businessName, gstin, adminId })
+    if (!made.existing) logAdminActivity(adminId, `Added customer ${name} (${phone})${isBusiness ? ` — ${businessName}` : ''} from Create Order`, 'customer', made.id, null, { phone, businessName }, ip)
+    const [row] = (await this.customerLookup(phone)).filter((c) => c.id === made.id)
+    return { ...row, existing: made.existing }
+  }
+
+  /**
+   * A manual order is created unpaid unless the admin says the money is already in hand. This is how they later say
+   * "the money has now arrived". Only manual orders: COD is marked paid on delivery, online/wallet by their own flows.
+   */
+  async markManualOrderPaid(orderId, { note }, adminId, ip) {
+    const order = await this.repository.findById(orderId)
+    if (!order) throw { statusCode: 404, message: 'Order not found' }
+    if (order.payment_method !== 'MANUAL') throw { statusCode: 400, message: 'Only manual orders are marked paid this way.' }
+    if (order.status === 'CANCELLED') throw { statusCode: 400, message: 'This order was cancelled.' }
+    if (order.payment_status === 'PAID') throw { statusCode: 409, message: 'This order is already marked paid.' }
+    const updated = await this.repository.markManualOrderPaid(orderId, adminId, note)
+    logAdminActivity(adminId, `Marked manual order ${order.order_number} as paid`, 'order', orderId, { payment_status: order.payment_status }, { payment_status: 'PAID' }, ip)
+    return updated
   }
 
   async getInvoice(orderId) {
@@ -579,6 +629,11 @@ export class AdminOrdersService {
 
     if (order.payment_status !== 'PAID') {
       throw { statusCode: 400, message: 'This order was never paid — there is nothing to refund' }
+    }
+    // A B2B credit order is paid by recorded settlements (cash / UPI taken by staff), not by a gateway payment or the
+    // wallet, so there is no automatic way to give that money back. It must be handled by hand.
+    if (order.payment_method === 'B2B_CREDIT') {
+      throw { statusCode: 400, message: 'B2B credit orders are settled through Collections, so they cannot be refunded here. Return the money by hand and note it on the order.' }
     }
 
     // This endpoint's entire purpose is moving money back to the customer —
@@ -803,7 +858,7 @@ export class AdminOrdersService {
     // same gate as `refundOrder`.
     let refundAmount = 0
     let appliedRefundTo = 'none'
-    if (refundTo && refundTo !== 'none' && order.payment_status === 'PAID') {
+    if (refundTo && refundTo !== 'none' && order.payment_status === 'PAID' && order.payment_method !== 'B2B_CREDIT') {
       const payment = await this.repository.getOrderPayment(orderId)
       // See refundOrder()'s identical computation above for why the COD
       // fallback branch subtracts wallet_amount_used.
@@ -1062,7 +1117,8 @@ export class AdminOrdersService {
         [orderId, method, parsedAmount, note || null, adminId]
       )
       await client.query(
-        `UPDATE orders SET b2b_amount_settled = b2b_amount_settled + $1, updated_at = NOW() WHERE id = $2`,
+        `UPDATE orders SET b2b_amount_settled = b2b_amount_settled + $1,
+                payment_status = CASE WHEN b2b_amount_settled + $1 + 0.01 >= total_amount THEN 'PAID' ELSE payment_status END, updated_at = NOW() WHERE id = $2`,
         [parsedAmount, orderId]
       )
       await client.query('COMMIT')

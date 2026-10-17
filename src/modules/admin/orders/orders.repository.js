@@ -1,7 +1,10 @@
 import { query, getClient } from '../../../config/database.js'
 import { revokeOrderPickupTokens } from '../../../utils/pickupTokens.js'
+import { ShopProductsRepository } from '../../shop-products/shop-products.repository.js'
 
 export class AdminOrdersRepository {
+  stock = new ShopProductsRepository()
+
   async findAll({ offset, limit, status, paymentMethod, paymentStatus, search, startDate, endDate, deliveryType, needsPaymentReview, recoveredFromFailed, riderId, minAmount, maxAmount, area, isB2B }) {
     // needsPaymentReview/recoveredFromFailed both key off payments.metadata,
     // so they share one join — kept out of the base query (not a LEFT JOIN)
@@ -193,7 +196,7 @@ export class AdminOrdersRepository {
     const { rows } = await query(
       `SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
               sh.name AS shop_name,
-              ba.company_name
+              COALESCE(ba.company_name, u.staff_business_name) AS company_name
          FROM orders o
          LEFT JOIN users u ON u.id = o.user_id
          LEFT JOIN shops sh ON sh.id = o.shop_id
@@ -528,79 +531,196 @@ export class AdminOrdersRepository {
     }
   }
 
-  async createManualOrder({ userId, items, paymentMethod, deliveryAddress, couponCode, adminId }) {
+  /**
+   * An order an admin places for a customer (phone / WhatsApp / walk-in).
+   *
+   * It follows the SAME rules as an app order: it belongs to one store (orders.shop_id), takes that store's price,
+   * and removes stock from that store's shop_products through the audited stock ledger (stock_movements), with the
+   * order line remembering which store product it came from so a cancellation puts the stock back.
+   * Payment: COD stays PENDING until delivery; MANUAL is PAID only when the admin says the money is already in hand.
+   */
+  async createManualOrder({ userId, items, paymentMethod, paymentReceived, deliveryAddress, adminId, shopId, orderType = 'B2C', dueDate, advance }) {
+    const isB2B = orderType === 'B2B'
+    const method = isB2B ? 'B2B_CREDIT' : paymentMethod || 'MANUAL'
     const client = await getClient()
     try {
       await client.query('BEGIN')
 
-      // Calculate totals
-      let subtotal = 0
-      const orderItems = []
-      for (const item of items) {
-        const { rows: [product] } = await client.query(
-          'SELECT id, name, price, sale_price, stock_quantity, unit, hsn_code, gst_rate FROM products WHERE id = $1 AND is_active = true',
-          [item.productId]
-        )
-        if (!product) throw { statusCode: 400, message: `Product ${item.productId} not found` }
-        if (product.stock_quantity < item.quantity) throw { statusCode: 400, message: `${product.name} out of stock` }
-
-        const price = product.sale_price || product.price
-        const total = price * item.quantity
-        subtotal += total
-        orderItems.push({
-          product_id: product.id,
-          name: product.name,
-          price: parseFloat(price),
-          quantity: item.quantity,
-          unit: product.unit,
-          total: parseFloat(total),
-          // GSTR-1 HSN Summary snapshot — no fee-settings resolution on this
-          // manual-order path, so only the product's own HSN/rate is
-          // stamped; the report's read-time COALESCE falls back to the
-          // global rate when this is null.
-          hsn_code_snapshot: product.hsn_code || null,
-          gst_rate_snapshot: product.gst_rate ?? null,
-        })
+      // One line per product (a product typed twice is one line).
+      const wanted = new Map()
+      const negotiated = new Map() // B2B: the price agreed with the customer for a product, if staff typed one
+      for (const it of items) {
+        wanted.set(it.productId, (wanted.get(it.productId) || 0) + it.quantity)
+        if (isB2B && it.unitPrice !== undefined && it.unitPrice !== null) negotiated.set(it.productId, Number(it.unitPrice))
       }
+      const productIds = [...wanted.keys()]
+      const quantities = productIds.map((id) => wanted.get(id))
 
-      // Generate order number
+      const shop = await this._resolveManualOrderShop(client, shopId, productIds, quantities)
+
+      let subtotalPaise = 0
+      const lines = []
+      for (const productId of productIds) {
+        const qty = wanted.get(productId)
+        const { rows: [row] } = await client.query(
+          `SELECT sp.id AS shop_product_id, sp.stock_quantity, sp.price AS sp_price, sp.sale_price AS sp_sale_price, sp.wholesale_price AS sp_wholesale_price, p.wholesale_price,
+                  p.id AS product_id, p.name, p.price, p.sale_price, p.unit, p.hsn_code, p.gst_rate
+             FROM shop_products sp JOIN products p ON p.id = sp.product_id
+            WHERE sp.shop_id = $1 AND sp.product_id = $2 AND sp.deleted_at IS NULL AND p.is_active = true`,
+          [shop.id, productId]
+        )
+        if (!row) throw { statusCode: 400, message: `That product is not sold at ${shop.name}.` }
+        // Same price order as the cart: the store's sale price, then the catalogue sale price, then the list price.
+        // B2B: the agreed price, else the wholesale price (no sale tier), else the list price — same as the cart does.
+        const price = isB2B
+          ? Number(negotiated.get(productId) ?? row.sp_wholesale_price ?? row.wholesale_price ?? row.sp_price ?? row.price)
+          : Number(row.sp_sale_price ?? row.sale_price ?? row.sp_price ?? row.price)
+        if (!Number.isFinite(price) || price < 0) throw { statusCode: 400, message: `${row.name} has no price.` }
+        const totalPaise = Math.round(price * 100) * qty
+        subtotalPaise += totalPaise
+        lines.push({ ...row, qty, price, total: totalPaise / 100 })
+      }
+      const subtotal = subtotalPaise / 100
+
+      const orderItems = lines.map((l) => ({
+        product_id: l.product_id, shopId: shop.id, shopProductId: l.shop_product_id, name: l.name, price: l.price, quantity: l.qty, unit: l.unit, total: l.total,
+        hsn_code_snapshot: l.hsn_code || null, gst_rate_snapshot: l.gst_rate ?? null,
+      }))
       const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}`
-
+      const paid = method === 'MANUAL' && paymentReceived === true
+      if (isB2B && dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) throw { statusCode: 400, message: 'The pay-by date must look like 2026-11-05.' }
+      const adv = isB2B && advance && Number(advance.amount) > 0 ? { amount: Math.round(Number(advance.amount) * 100) / 100, method: advance.method } : null
+      if (adv && !['CASH', 'UPI'].includes(adv.method)) throw { statusCode: 400, message: 'Money received now must be Cash or UPI.' }
+      if (adv && adv.amount > subtotal + 0.001) throw { statusCode: 400, message: `That is more than the order total of ₹${subtotal}.` }
       const { rows: [order] } = await client.query(
-        `INSERT INTO orders (order_number, user_id, status, items, subtotal, total_amount, payment_method, payment_status, delivery_address)
-         VALUES ($1, $2, 'CONFIRMED', $3, $4, $5, $6, $7, $8)
+        `INSERT INTO orders (order_number, user_id, shop_id, status, items, subtotal, total_amount, payment_method, payment_status, delivery_address,
+                             b2b_approval_status, b2b_approved_by, b2b_approved_at, b2b_payment_due_date, b2b_amount_settled)
+         VALUES ($1, $2, $3, 'CONFIRMED', $4, $5, $6, $7, $8, $9,
+                 $10, $11, ${isB2B ? 'NOW()' : 'NULL'}, $12, $13)
          RETURNING *`,
-        [
-          orderNumber, userId, JSON.stringify(orderItems),
-          subtotal, subtotal, paymentMethod || 'MANUAL',
-          paymentMethod === 'COD' ? 'PENDING' : 'PAID',
-          JSON.stringify(deliveryAddress),
-        ]
+        [orderNumber, userId, shop.id, JSON.stringify(orderItems), subtotal, subtotal, method,
+          isB2B ? (adv && adv.amount + 0.01 >= subtotal ? 'PAID' : 'PENDING') : paid ? 'PAID' : 'PENDING', JSON.stringify(deliveryAddress),
+          isB2B ? 'APPROVED' : null, isB2B ? adminId : null, isB2B ? dueDate || null : null, adv ? adv.amount : 0]
       )
-
-      // Insert order items
-      for (const oi of orderItems) {
-        await client.query(
-          `INSERT INTO order_items (order_id, product_id, name, price, quantity, unit, total, hsn_code_snapshot, gst_rate_snapshot)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [order.id, oi.product_id, oi.name, oi.price, oi.quantity, oi.unit, oi.total, oi.hsn_code_snapshot, oi.gst_rate_snapshot]
-        )
-        // Deduct stock
-        await client.query(
-          'UPDATE products SET stock_quantity = stock_quantity - $1, total_sold = total_sold + $1 WHERE id = $2',
-          [oi.quantity, oi.product_id]
-        )
+      if (adv) {
+        await client.query(`INSERT INTO order_b2b_settlements (order_id, method, amount, note, recorded_by) VALUES ($1, $2, $3, 'Received when the order was taken', $4)`, [order.id, adv.method, adv.amount, adminId])
       }
 
-      // Log initial status
+      for (const l of lines) {
+        await client.query(
+          `INSERT INTO order_items (order_id, product_id, shop_product_id, name, price, quantity, unit, total, hsn_code_snapshot, gst_rate_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [order.id, l.product_id, l.shop_product_id, l.name, l.price, l.qty, l.unit, l.total, l.hsn_code || null, l.gst_rate ?? null]
+        )
+        try {
+          await this.stock.applyStockChange(client, {
+            shopProductId: l.shop_product_id, delta: -l.qty, type: 'ORDER_DEDUCTION', source: 'DASHBOARD', orderId: order.id, actor: { userId: adminId },
+          })
+        } catch (err) {
+          if (err?.code === 'STOCK_NEGATIVE_FORBIDDEN') throw { statusCode: 400, message: `${l.name} is out of stock at ${shop.name}.` }
+          throw err
+        }
+        await client.query('UPDATE products SET total_sold = total_sold + $1 WHERE id = $2', [l.qty, l.product_id])
+      }
+
       await client.query(
         `INSERT INTO order_status_history (order_id, from_status, to_status, changed_by, note)
-         VALUES ($1, NULL, 'CONFIRMED', $2, 'Manual order by admin')`,
-        [order.id, adminId]
+         VALUES ($1, NULL, 'CONFIRMED', $2, $3)`,
+        [order.id, adminId, isB2B ? 'B2B order taken by admin (on credit)' : paid ? 'Manual order by admin — money already received' : 'Manual order by admin']
       )
 
       await client.query('COMMIT')
+      order._touched = { shopId: shop.id, productIds }
       return order
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  /**
+   * Customers for the Create Order screen, each with the labels staff need: a business or a home customer, and
+   * whether this person has ever opened the app (staff-added customers who have not are "not on the app yet").
+   */
+  async customerLookup(search) {
+    const term = String(search ?? '').trim().slice(0, 60)
+    const { rows } = await query(
+      `SELECT u.id, u.name, u.phone, ba.company_name, ba.status AS business_status, u.staff_business_name, u.staff_business_gstin,
+              (u.added_by_staff IS NOT NULL) AS added_by_staff, (u.added_by_staff IS NOT NULL AND u.last_active_at IS NULL) AS not_on_app,
+              (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id)::int AS order_count
+         FROM users u LEFT JOIN business_accounts ba ON ba.user_id = u.id
+        WHERE u.role = 'CUSTOMER' AND u.is_active IS NOT FALSE AND u.is_blocked IS NOT TRUE
+          AND ($1 = '' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR ba.company_name ILIKE $2 OR u.staff_business_name ILIKE $2)
+        ORDER BY (ba.status = 'APPROVED') DESC NULLS LAST, u.last_active_at DESC NULLS LAST, u.created_at DESC LIMIT 10`,
+      [term, `%${term}%`]
+    )
+    return rows
+  }
+
+  /** A customer added by staff. If the phone number already has an account, that account is returned untouched. */
+  async createCustomerByStaff({ name, phone, businessName, gstin, adminId }) {
+    const client = await getClient()
+    try {
+      await client.query('BEGIN')
+      const { rows: [found] } = await client.query('SELECT id FROM users WHERE phone = $1 FOR UPDATE', [phone])
+      if (found) { await client.query('COMMIT'); return { id: found.id, existing: true } }
+      const code = Math.random().toString(36).slice(2, 8).toUpperCase().padEnd(6, 'X')
+      const { rows: [u] } = await client.query(
+        `INSERT INTO users (phone, name, role, referral_code, added_by_staff, staff_added_at, staff_business_name, staff_business_gstin)
+         VALUES ($1, $2, 'CUSTOMER', $3, $4, NOW(), $5, $6) RETURNING id`,
+        [phone, name, code, adminId, businessName || null, gstin || null]
+      )
+      await client.query('COMMIT')
+      return { id: u.id, existing: false }
+    } catch (err) {
+      await client.query('ROLLBACK')
+      if (err?.code === '23505') throw { statusCode: 409, message: 'That phone number or referral code is already in use. Try again.' }
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  /** The store that will deliver a manual order: the one chosen, the only one, or the only one that can cover every line. */
+  async _resolveManualOrderShop(client, shopId, productIds, quantities) {
+    if (shopId) {
+      const { rows: [shop] } = await client.query('SELECT id, name FROM shops WHERE id = $1 AND is_active = true AND deleted_at IS NULL', [shopId])
+      if (!shop) throw { statusCode: 400, message: 'That store is not active.' }
+      return shop
+    }
+    const { rows: shops } = await client.query('SELECT id, name FROM shops WHERE is_active = true AND deleted_at IS NULL ORDER BY name')
+    if (shops.length === 1) return shops[0]
+    const { rows: ok } = await client.query(
+      `SELECT s.id, s.name FROM shops s
+        WHERE s.is_active = true AND s.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest($1::uuid[], $2::int[]) AS w(pid, qty)
+             WHERE NOT EXISTS (SELECT 1 FROM shop_products sp WHERE sp.shop_id = s.id AND sp.product_id = w.pid AND sp.deleted_at IS NULL AND sp.is_available IS NOT FALSE AND sp.stock_quantity >= w.qty))
+        ORDER BY s.name`,
+      [productIds, quantities]
+    )
+    if (ok.length === 1) return ok[0]
+    if (ok.length === 0) throw { statusCode: 400, message: 'No single store has enough stock for all of these items. Choose a store, or change the quantities.', code: 'NO_STORE_HAS_STOCK' }
+    throw { statusCode: 400, message: 'Choose which store will deliver this order.', code: 'SHOP_REQUIRED' }
+  }
+
+  async invalidateStockCaches(order) {
+    if (!order?._touched) return
+    const { invalidateCatalogCaches } = await import('../../catalog-bulk/catalog-cache.js')
+    await invalidateCatalogCaches({ shopIds: [order._touched.shopId], productIds: order._touched.productIds })
+  }
+
+  async markManualOrderPaid(orderId, adminId, note) {
+    const client = await getClient()
+    try {
+      await client.query('BEGIN')
+      const { rows: [o] } = await client.query(`UPDATE orders SET payment_status = 'PAID', updated_at = NOW() WHERE id = $1 AND payment_method = 'MANUAL' AND payment_status <> 'PAID' RETURNING *`, [orderId])
+      if (!o) throw { statusCode: 409, message: 'This order is already marked paid.' }
+      await client.query(`INSERT INTO order_status_history (order_id, from_status, to_status, changed_by, note) VALUES ($1, $2, $2, $3, $4)`, [orderId, o.status, adminId, `Money received${note ? ` — ${note}` : ''}`])
+      await client.query('COMMIT')
+      return o
     } catch (err) {
       await client.query('ROLLBACK')
       throw err

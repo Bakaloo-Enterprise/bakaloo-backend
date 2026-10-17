@@ -758,6 +758,8 @@ export class OrdersService {
         }
       }
 
+      // payment_status stays PENDING: nothing has been collected yet. It becomes PAID only when the recorded
+      // settlements cover the total (AdminOrdersService#recordB2BSettlement, migration 163).
       // B2B_CREDIT ("Place Order") — deliberately has no credit-limit
       // concept at all (an approved B2B account may place an order of any
       // size on credit; the admin controls exposure entirely through
@@ -775,10 +777,10 @@ export class OrdersService {
       if (normalizedPaymentMethod === 'B2B_CREDIT' && createdOrders.length === 1) {
         const orderId = createdOrders[0].id
         await client.query(
-          `UPDATE orders SET payment_status = 'PAID', b2b_approval_status = 'PENDING', updated_at = NOW() WHERE id = $1`,
+          `UPDATE orders SET payment_status = 'PENDING', b2b_approval_status = 'PENDING', updated_at = NOW() WHERE id = $1`,
           [orderId]
         )
-        createdOrders[0].paymentStatus = 'PAID'
+        createdOrders[0].paymentStatus = 'PENDING'
         createdOrders[0].b2bApprovalStatus = 'PENDING'
       }
 

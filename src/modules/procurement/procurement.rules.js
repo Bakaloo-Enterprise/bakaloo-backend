@@ -5,6 +5,11 @@ import { BusinessError } from '../../utils/business-error.js'
  * Quantities are whole units of the product's selling unit (store stock is an INTEGER).
  */
 
+export const REJECT_OUTCOMES = Object.freeze({
+  WASTAGE: { label: 'Thrown away', loss: true },
+  RETURN: { label: 'Sent back to the supplier', loss: false },
+  REPLACEMENT: { label: 'Supplier will replace it', loss: false },
+})
 export const PURPOSES = Object.freeze(['RETAIL', 'B2B_RESERVED'])
 export const ADJUSTMENT_KINDS = Object.freeze({
   VENDOR_RETURN: { label: 'Returned to vendor', loss: false, stockType: 'MANUAL_ADJUSTMENT' },
@@ -66,17 +71,18 @@ export function normalizeEntry(input, { today }) {
 /**
  * Where an entry's stock stands.
  *   usable    = received − damaged at the door
- *   available = usable − sent to stores (net of reversals) − taken out of central stock (returns, damage, B2B…)
+ *   available = usable − sent to stores (net of reversals) − taken out of central stock (returns, damage, B2B…) − reserved for B2B requests
  *   shortage  = expected − received (never negative)
  */
-export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocated = 0, centralAdjusted = 0 } = {}) {
+export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocated = 0, centralAdjusted = 0, reserved = 0 } = {}) {
   const usable = receivedQty - damagedQty
   return {
     usable,
     shortage: Math.max(0, expectedQty - receivedQty),
     allocated,
     centralAdjusted,
-    available: usable - allocated - centralAdjusted,
+    reserved,
+    available: usable - allocated - centralAdjusted - reserved,
   }
 }
 
@@ -85,6 +91,7 @@ export function entryFigures({ expectedQty, receivedQty, damagedQty }, { allocat
  * @param {{ available: number, purpose: string, destinationShopId: string|null, status: string }} entry
  */
 export function checkSplit(entry, rows) {
+  if (entry.status === 'ORDERED') throw new BusinessError('These goods have not arrived yet. Receive them first.', 409, 'NOT_RECEIVED')
   if (entry.status !== 'ACTIVE') throw new BusinessError('This purchase was cancelled.', 409, 'ENTRY_CANCELLED')
   if (entry.purpose === 'B2B_RESERVED') throw new BusinessError('This stock is reserved for B2B. Release the reservation first if it should go to stores.', 409, 'RESERVED_FOR_B2B')
   if (!Array.isArray(rows) || rows.length === 0) throw new BusinessError('Choose at least one store.', 400, 'VALIDATION', { allocations: 'Empty' })
@@ -111,6 +118,7 @@ export function checkSplit(entry, rows) {
  */
 export function checkAdjustment(entry, { kind, quantity, shopId, reason }, { available, shopHeld = 0 }) {
   if (!ADJUSTMENT_KINDS[kind]) throw new BusinessError('Unknown adjustment type.', 400, 'VALIDATION', { kind: 'Invalid' })
+  if (entry.status === 'ORDERED') throw new BusinessError('These goods have not arrived yet. Receive them first.', 409, 'NOT_RECEIVED')
   if (entry.status !== 'ACTIVE') throw new BusinessError('This purchase was cancelled.', 409, 'ENTRY_CANCELLED')
   const q = whole('Quantity', quantity, { min: 1 })
   if (!String(reason ?? '').trim()) throw new BusinessError('Give a reason — the record has to explain the difference.', 400, 'VALIDATION', { reason: 'Required' })
@@ -124,6 +132,34 @@ export function checkAdjustment(entry, { kind, quantity, shopId, reason }, { ava
 }
 
 /** Entry can be cancelled only while nothing was done with it. */
-export function canCancel({ allocationCount, adjustmentCount }) {
-  return allocationCount === 0 && adjustmentCount === 0
+export function canCancel({ allocationCount, adjustmentCount, reservationCount = 0 }) {
+  return allocationCount === 0 && adjustmentCount === 0 && reservationCount === 0
+}
+
+/**
+ * Validate the receiving check of a purchase that was ordered.
+ *   received  = what physically arrived (counted)
+ *   rejected  = part of that which failed the quality check (accepted = received − rejected)
+ *   outcome   = what happens to the rejected part (required when rejected > 0)
+ *   restComing= the supplier will still bring the missing part (expected − received)
+ * Returns the figures to store, including how much the supplier still owes.
+ */
+export function checkReceipt(entry, { receivedQty, rejectedQty = 0, outcome, restComing = false }) {
+  if (entry.status === 'CANCELLED') throw new BusinessError('This purchase was cancelled.', 409, 'ENTRY_CANCELLED')
+  if (entry.status !== 'ORDERED') throw new BusinessError('These goods were already received.', 409, 'ALREADY_RECEIVED')
+  const received = whole('Received quantity', receivedQty, { min: 1 })
+  const rejected = whole('Rejected quantity', rejectedQty)
+  if (rejected > received) throw new BusinessError('Rejected cannot be more than what came.', 400, 'VALIDATION', { rejectedQty: 'More than received' })
+  if (rejected > 0 && !REJECT_OUTCOMES[outcome]) throw new BusinessError('Say what happens to the bad goods.', 400, 'VALIDATION', { outcome: 'Required' })
+  const missing = Math.max(0, entry.expectedQty - received)
+  const owed = (restComing ? missing : 0) + (rejected > 0 && outcome === 'REPLACEMENT' ? rejected : 0)
+  return { receivedQty: received, rejectedQty: rejected, outcome: rejected > 0 ? outcome : null, missing, owedQty: owed, accepted: received - rejected }
+}
+
+/** A later delivery of what the supplier owed (short part or replacement). */
+export function checkArrival(entry, quantity) {
+  if (entry.status !== 'ACTIVE') throw new BusinessError('Receive the first delivery before adding a later one.', 409, 'NOT_RECEIVED')
+  const q = whole('Quantity', quantity, { min: 1 })
+  if (q > entry.owedQty) throw new BusinessError(entry.owedQty > 0 ? `The supplier only owes ${entry.owedQty}.` : 'The supplier does not owe anything on this purchase.', 409, 'NOTHING_OWED', { owed: entry.owedQty })
+  return q
 }

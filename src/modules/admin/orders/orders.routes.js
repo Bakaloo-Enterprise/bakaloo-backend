@@ -4,7 +4,7 @@ import { AdminOrdersController } from './orders.controller.js'
 import {
   listOrdersSchema, statsByStatusSchema, orderDetailSchema,
   updateStatusSchema, assignRiderSchema, bulkAssignSchema,
-  manualOrderSchema, invoiceSchema, packingSlipSchema, gstInvoiceSchema, exportSchema,
+  manualOrderSchema, markManualPaidSchema, customerLookupSchema, staffCustomerSchema, invoiceSchema, packingSlipSchema, gstInvoiceSchema, exportSchema,
   refundOrderSchema, cancelOrderSchema, bulkStatusSchema,
   rescheduleOrderSchema, orderNotesListSchema, addOrderNoteSchema,
   reconcilePaymentSchema, razorpayDetailsSchema, bulkReconcilePaymentsSchema,
@@ -25,7 +25,10 @@ export default async function adminOrdersRoutes(fastify) {
   fastify.get('/', { schema: listOrdersSchema, preHandler: adminAuth }, ctrl.findAll.bind(ctrl))
   fastify.get('/stats-by-status', { schema: statsByStatusSchema, preHandler: adminAuth }, ctrl.getStatsByStatus.bind(ctrl))
   fastify.get('/export', { schema: exportSchema, preHandler: adminAuth }, ctrl.exportCSV.bind(ctrl))
+  fastify.get('/customers/lookup', { schema: customerLookupSchema, preHandler: adminAuth }, ctrl.customerLookup.bind(ctrl))
+  fastify.post('/customers', { schema: staffCustomerSchema, preHandler: adminAuth }, ctrl.createCustomerByStaff.bind(ctrl))
   fastify.post('/manual', { schema: manualOrderSchema, preHandler: adminAuth }, ctrl.createManualOrder.bind(ctrl))
+  fastify.post('/:id/payment-received', { schema: markManualPaidSchema, preHandler: adminAuth }, ctrl.markManualOrderPaid.bind(ctrl))
   fastify.post('/bulk-assign', { schema: bulkAssignSchema, preHandler: adminAuth }, ctrl.bulkAssign.bind(ctrl))
   fastify.get('/:id', { schema: orderDetailSchema, preHandler: adminAuth }, ctrl.findById.bind(ctrl))
   fastify.get('/:id/notes', { schema: orderNotesListSchema, preHandler: adminAuth }, ctrl.getOrderNotes.bind(ctrl))

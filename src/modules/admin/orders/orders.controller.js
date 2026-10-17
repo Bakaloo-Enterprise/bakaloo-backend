@@ -91,7 +91,33 @@ export class AdminOrdersController {
       const data = await this.service.createManualOrder(request.body, request.user.id, request.ip)
       return reply.code(201).send(success(data, 'Manual order created'))
     } catch (err) {
-      return reply.code(err.statusCode || 500).send(error(err.message))
+      return reply.code(err.statusCode || 500).send(error(err.message, err.code))
+    }
+  }
+
+  async customerLookup(request, reply) {
+    try {
+      return reply.send(success(await this.service.customerLookup(request.query.search), 'Customers fetched'))
+    } catch (err) {
+      return reply.code(err.statusCode || 500).send(error(err.message, err.code))
+    }
+  }
+
+  async createCustomerByStaff(request, reply) {
+    try {
+      const data = await this.service.createCustomerByStaff(request.body, request.user.id, request.ip)
+      return reply.code(data.existing ? 200 : 201).send(success(data, data.existing ? 'This number already has an account' : 'Customer added'))
+    } catch (err) {
+      return reply.code(err.statusCode || 500).send(error(err.message, err.code))
+    }
+  }
+
+  async markManualOrderPaid(request, reply) {
+    try {
+      const data = await this.service.markManualOrderPaid(request.params.id, request.body || {}, request.user.id, request.ip)
+      return reply.send(success(data, 'Marked as paid'))
+    } catch (err) {
+      return reply.code(err.statusCode || 500).send(error(err.message, err.code))
     }
   }
 
