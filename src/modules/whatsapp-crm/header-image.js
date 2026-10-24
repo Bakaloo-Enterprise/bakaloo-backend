@@ -92,3 +92,6 @@ export async function resolveHeaderImage(src, ctx = {}) {
   }
   return toWhatsappImageUrl(url) ?? toWhatsappImageUrl(src.fallbackUrl)
 }
+
+/** The picture that went out in an image header, remembered so the inbox can show what the customer actually got. */
+export const headerPicture = (tpl, url) => (String(tpl.header_format ?? '') === 'IMAGE' && url ? { url: String(url), kind: 'template_header' } : null)

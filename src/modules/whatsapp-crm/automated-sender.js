@@ -1,6 +1,6 @@
 import { MetaApiError } from './meta-client.js'
 import { buildSendComponents, canSend, renderPreview } from './template.js'
-import { resolveHeaderImage } from './header-image.js'
+import { headerPicture, resolveHeaderImage } from './header-image.js'
 import { classifySendError, consentDecision, resolveTemplateValues } from './campaign.js'
 
 /**
@@ -71,7 +71,7 @@ export class AutomatedSender {
     const queued = await this.repo.withTransaction(async (client) => {
       const conv = await this.repo.ensureConversation(contact.id, client)
       const msg = await this.repo.insertOutboundQueued(
-        { conversationId: conv.id, contactId: contact.id, type: 'template', body: preview, templateName: template.name, templateLanguage: template.language, templateId: template.id, campaignId, workflowId },
+        { conversationId: conv.id, contactId: contact.id, type: 'template', body: preview, templateName: template.name, templateLanguage: template.language, templateId: template.id, campaignId, workflowId, media: headerPicture(template, mediaUrl) },
         client,
       )
       await this.repo.bumpConversationForOutbound(conv.id, preview.slice(0, 200), client, { keepAwaiting: true })

@@ -267,12 +267,26 @@ export const sendTemplateSchema = {
 }
 
 // ─── Campaigns, consent, suppression, workflows (Phase 7) ─────────────
+// The server's ajv runs with removeAdditional:'all', which deletes every key not listed under `properties` even when
+// additionalProperties is true — so each key of a picture source must be declared or it is silently stripped.
+// (Real validation of the values stays in header-image.js.)
+const imageSource = {
+  type: ['object', 'null'],
+  properties: {
+    mode: { type: 'string', maxLength: 30 },
+    urls: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 2000 } },
+    productIds: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 36 } },
+    pick: { type: 'string', maxLength: 10 },
+    fallbackUrl: { type: 'string', maxLength: 2000 },
+  },
+}
+
 const campaignProps = {
   name: { type: 'string', maxLength: 120 },
   templateId: uuid,
   templateValues: stringMap('^[a-z0-9_.]+$', 500),
   headerMediaUrl: { type: 'string', maxLength: 2000 },
-  headerImageSource: { type: ['object', 'null'], additionalProperties: true },
+  headerImageSource: imageSource,
   ratePerMinute: { type: 'integer', minimum: 1, maximum: 600 },
   audience: {
     type: 'object',
@@ -360,7 +374,7 @@ const workflowProps = {
         templateId: uuid,
         labelId: uuid,
         couponId: uuid,
-        imageSource: { type: ['object', 'null'], additionalProperties: true },
+        imageSource,
         values: stringMap('^[a-z0-9_.]+$', 500),
       },
     },

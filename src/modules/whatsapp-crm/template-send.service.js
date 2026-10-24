@@ -1,6 +1,7 @@
 import { CrmError } from './errors.js'
 import { META_CODE, MetaApiError } from './meta-client.js'
 import { describeLastOrder, friendlyName } from './bot.js'
+import { headerPicture } from './header-image.js'
 import { buildSendComponents, canSend, renderPreview, summarizeComponents } from './template.js'
 
 /**
@@ -77,6 +78,7 @@ export class TemplateSendService {
     const queued = await this.repo.insertOutboundQueued({
       conversationId: conv.id, contactId: conv.contact_id, type: 'template', body: preview,
       templateName: tpl.name, templateLanguage: tpl.language, templateId: tpl.id, sentBy,
+      media: headerPicture(tpl, mediaUrl),
     })
     await this.repo.bumpConversationForOutbound(conv.id, preview.slice(0, 200))
 
