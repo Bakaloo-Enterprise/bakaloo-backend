@@ -1,7 +1,7 @@
 import { CrmError } from './errors.js'
 import { friendlyName } from './bot.js'
 import { canSend } from './template.js'
-import { consentDecision, isQuietHoursIST, unfillableKeys, validateCampaignInput } from './campaign.js'
+import { consentDecision, unfillableKeys, validateCampaignInput } from './campaign.js'
 import { waIdToIndianPhone, toWaId } from './phone.js'
 
 export const CAMPAIGN_TICK_SECONDS = 10
@@ -16,7 +16,7 @@ const CAMPAIGN_TOKENS = ['customer_name']
  *  - only an APPROVED template; if Meta pauses/disables it mid-campaign the campaign pauses itself
  *  - only contacts with recorded opt-in, never opted-out or suppressed ones
  *  - the audience is snapshotted at launch; each contact appears once
- *  - marketing templates are not sent 9 pm – 9 am IST
+ *  - no night-time hold: when to send is the operator's call
  */
 export class CampaignService {
   /**
@@ -190,7 +190,6 @@ export class CampaignService {
     if (!tpl) return this.pauseWith(c, 'The template no longer exists.')
     const gate = canSend(tpl)
     if (!gate.ok) return this.pauseWith(c, gate.reason)
-    if (tpl.meta_category === 'MARKETING' && isQuietHoursIST(this.now())) return 0 // resumes by itself at 9 am IST
 
     const perTick = Math.max(1, Math.ceil((c.rate_per_minute * CAMPAIGN_TICK_SECONDS) / 60))
     const claimed = await this.repo.claimRecipients(campaignId, perTick)

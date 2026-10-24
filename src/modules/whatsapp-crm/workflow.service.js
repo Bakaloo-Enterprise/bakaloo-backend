@@ -2,7 +2,7 @@ import { CrmError } from './errors.js'
 import { friendlyName } from './bot.js'
 import { canSend } from './template.js'
 import {
-  DEFAULT_CART_COOLDOWN_HOURS, TRIGGERS, cartRef, classifySendError, evaluateConditions, fallbackDecision, isQuietHoursIST, isServiceWindowOpen, pickFallbackText,
+  DEFAULT_CART_COOLDOWN_HOURS, TRIGGERS, cartRef, classifySendError, evaluateConditions, fallbackDecision, isServiceWindowOpen, pickFallbackText,
   renderFallback, tokensIn, unfillableKeys, validateWorkflowInput,
 } from './campaign.js'
 
@@ -208,7 +208,6 @@ export class WorkflowService {
   async sendAction(wf, run, kind, ctx, contact, tokens, action) {
     const tpl = await this.tplRepo.get(action.templateId)
     if (!tpl) return { status: 'FAILED', reason: 'TEMPLATE_GONE' }
-    if (tpl.meta_category === 'MARKETING' && isQuietHoursIST(this.now())) return { status: 'SKIPPED', reason: 'QUIET_HOURS' }
 
     const withCoupon = { ...tokens }
     let couponId = null
@@ -289,7 +288,6 @@ export class WorkflowService {
       const finish = (reason) => this.repo.setRunReason(run.id, reason)
       if (!ctx || !contact || !tpl) return finish('FALLBACK_SKIPPED_EVENT_GONE')
       if (!(await this.repo.cartStillOpen(ctx.id))) return finish('FALLBACK_SKIPPED_CART_RECOVERED')
-      if (tpl.meta_category === 'MARKETING' && isQuietHoursIST(this.now())) return finish('FALLBACK_SKIPPED_QUIET_HOURS')
 
       const wf = { id: run.workflow_id }
       const tokens = this.tokensFor('cart', ctx, contact)
