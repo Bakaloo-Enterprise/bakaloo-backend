@@ -174,7 +174,7 @@ describe.skipIf(!enabled)('WhatsApp CRM — prospect outreach', () => {
       await query(`UPDATE wa_contacts SET marketing_consent = 'OPTED_OUT' WHERE wa_id = $1`, ['91' + P(3)])
       const t = await tpl()
       const camp = await campaigns.create({ name: 'T8 camp', templateId: t.id, audience: { type: 'IMPORT', ids: [imp.id] } }, mgr)
-      expect(await campaigns.preview(camp.id)).toEqual({ audience: 3, willSend: 2, skipped: { OPTED_OUT: 1 } })
+      expect(await campaigns.preview(camp.id)).toMatchObject({ audience: 3, willSend: 2, skipped: { OPTED_OUT: 1 } })
       await campaigns.launch(camp.id)
       await campaigns.tick()
       await campaigns.tick()

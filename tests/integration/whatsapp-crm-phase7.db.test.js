@@ -116,7 +116,7 @@ describe.skipIf(!enabled)('WhatsApp CRM — campaigns & workflows', () => {
       const tpl = await template('t7_offer')
       const camp = await campaign(tpl, await segmentWith([a.userId, b.userId, c.userId, d.userId]))
 
-      expect(await campaigns.preview(camp.id)).toEqual({ audience: 4, willSend: 1, skipped: { NO_CONSENT: 1, OPTED_OUT: 1, SUPPRESSED: 1 } })
+      expect(await campaigns.preview(camp.id)).toMatchObject({ audience: 4, willSend: 1, skipped: { NO_CONSENT: 1, OPTED_OUT: 1, SUPPRESSED: 1 } })
       const launched = await campaigns.launch(camp.id)
       expect(launched).toMatchObject({ status: 'SENDING', total_recipients: 1 })
       const rows = await recipients(camp.id)
@@ -202,17 +202,32 @@ describe.skipIf(!enabled)('WhatsApp CRM — campaigns & workflows', () => {
       expect((await statusOf(camp.id)).status).toBe('COMPLETED')
     })
 
-    it('does not send marketing templates at night (IST) and resumes in the morning', async () => {
+    it('sends marketing templates at any hour — no night hold', async () => {
       const a = await customer('9999003001', 'Asha', { consent: 'OPTED_IN' })
       const camp = await campaign(await template('t7_offer'), await segmentWith([a.userId]))
       await campaigns.launch(camp.id)
       clock = NIGHT
       await campaigns.tick()
-      expect(client.sendTemplate).not.toHaveBeenCalled()
-      expect((await statusOf(camp.id)).status).toBe('SENDING')
-      clock = DAYTIME
-      await campaigns.tick()
       expect(client.sendTemplate).toHaveBeenCalledTimes(1)
+    })
+
+    it('a segment with no opt-ins lists who needs one; recording it unlocks sending (the VIP flow)', async () => {
+      const a = await customer('9999003001', 'Asha')
+      const b = await customer('9999003002', 'Bala')
+      const camp = await campaign(await template('t7_offer'), await segmentWith([a.userId, b.userId]))
+
+      const before = await campaigns.preview(camp.id)
+      expect(before).toMatchObject({ audience: 2, willSend: 0, skipped: { NO_CONSENT: 2 } })
+      expect([...before.needsOptIn].sort()).toEqual(['9999003001', '9999003002'])
+      await expect(campaigns.launch(camp.id)).rejects.toMatchObject({ code: 'NO_RECIPIENTS' })
+
+      await campaigns.recordConsent({ phones: before.needsOptIn, source: 'told us on whatsapp', confirm: true })
+
+      const after = await campaigns.preview(camp.id)
+      expect(after).toMatchObject({ audience: 2, willSend: 2, skipped: {}, needsOptIn: [] })
+      expect(await campaigns.launch(camp.id)).toMatchObject({ status: 'SENDING', total_recipients: 2 })
+      await campaigns.tick()
+      expect(client.sendTemplate).toHaveBeenCalledTimes(2)
     })
 
     it('records an opt-out reported by Meta (131050) as a skip and remembers it', async () => {
@@ -469,15 +484,14 @@ describe.skipIf(!enabled)('WhatsApp CRM — campaigns & workflows', () => {
       expect(client.sendTemplate).not.toHaveBeenCalled()
     })
 
-    it('does not send marketing reminders at night', async () => {
+    it('sends marketing reminders at night too', async () => {
       const a = await customer('9999003001', 'Asha', { consent: 'OPTED_IN' })
       const wf = await workflow(await cartTemplate(), { couponId: (await coupon()).id })
       await query(`UPDATE wa_workflows SET activated_at = NOW() - interval '1 hour' WHERE id = $1`, [wf.id])
       await cart(a.userId)
       clock = NIGHT
       await workflows.tick()
-      expect(client.sendTemplate).not.toHaveBeenCalled()
-      expect((await runs(wf.id))[0]).toMatchObject({ status: 'SKIPPED', reason: 'QUIET_HOURS' })
+      expect(client.sendTemplate).toHaveBeenCalledTimes(1)
     })
 
     it('fires once even when several workers scan at the same time', async () => {

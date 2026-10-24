@@ -97,11 +97,13 @@ export class CampaignService {
         hasMessagedUs: false,
         hasAddress: Boolean(r.wa_id || r.bsuid),
       })
-      return { contactId: r.id, status: d.ok ? 'PENDING' : 'SKIPPED', reason: d.reason }
+      return { contactId: r.id, status: d.ok ? 'PENDING' : 'SKIPPED', reason: d.reason, wa: r.wa_id }
     })
     const skipped = {}
     for (const e of entries) if (e.reason) skipped[e.reason] = (skipped[e.reason] ?? 0) + 1
-    return { entries, summary: { audience: entries.length, willSend: entries.filter((e) => e.status === 'PENDING').length, skipped } }
+    // Who could be fixed by recording an opt-in, so the dashboard can offer that right where the problem shows.
+    const needsOptIn = entries.filter((e) => e.reason === 'NO_CONSENT').map((e) => waIdToIndianPhone(e.wa)).filter(Boolean).slice(0, 200)
+    return { entries, summary: { audience: entries.length, willSend: entries.filter((e) => e.status === 'PENDING').length, skipped, needsOptIn } }
   }
 
   async preview(id) {
