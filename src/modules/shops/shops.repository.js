@@ -1,4 +1,5 @@
 import { query } from '../../config/database.js'
+import { salesReports, scopeOf } from '../reports-shared/sales-reports.js'
 
 /**
  * Shops repository — all SQL queries for shops
@@ -62,6 +63,19 @@ export class ShopsRepository {
       ]
     )
     return rows[0]
+  }
+
+  /**
+   * Live lifetime sales per shop on the shared sales rules (orders that stood; money kept = sold − refunds).
+   * The `shops.total_orders` / `total_revenue` columns are never updated by anything, so they stay 0 —
+   * screens must show these numbers instead.
+   * @param {string[]} ids
+   * @returns {Promise<Map<string, {total_orders: number, total_revenue: number}>>}
+   */
+  async salesTotals(ids) {
+    if (!ids?.length) return new Map()
+    const { data } = await salesReports.stores(scopeOf({}, ids), 1, ids.length, { topShape: true })
+    return new Map(data.map((r) => [r.shop_id, { total_orders: r.total_orders, total_revenue: r.total_revenue }]))
   }
 
   /**

@@ -22,6 +22,7 @@ import adminWhatsappCrmRoutes from './whatsapp-crm/whatsapp-crm.routes.js'
 import procurementRoutes from '../procurement/procurement.routes.js'
 import catalogBulkRoutes from '../catalog-bulk/catalog-bulk.routes.js'
 import businessAnalyticsRoutes from '../business-analytics/business-analytics.routes.js'
+import erpRoutes from '../erp/erp.routes.js'
 import adminTeamChatRoutes from './team-chat/team-chat.routes.js'
 import adminCustomerSegmentsRoutes from './customer-segments/customer-segments.routes.js'
 import adminAreaSegmentsRoutes from './area-segments/area-segments.routes.js'
@@ -97,6 +98,7 @@ export default async function adminRoutes(fastify) {
   fastify.register(procurementRoutes, { prefix: '/procurement' })
   fastify.register(catalogBulkRoutes, { prefix: '/catalog-bulk' })
   fastify.register(businessAnalyticsRoutes, { prefix: '/business-analytics' })
+  fastify.register(erpRoutes, { prefix: '/erp' })
   fastify.register(adminTeamChatRoutes, { prefix: '/chat' })
   fastify.register(adminCustomerSegmentsRoutes, { prefix: '/customer-segments' })
   fastify.register(adminAreaSegmentsRoutes, { prefix: '/area-segments' })

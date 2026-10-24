@@ -4,7 +4,7 @@ export const getStatsSchema = {
   querystring: {
     type: 'object',
     properties: {
-      period: { type: 'string', enum: ['today', 'week', 'month'], default: 'week' },
+      period: { type: 'string', enum: ['today', 'week', 'month', 'year'], default: 'week' },
     },
   },
 }
@@ -65,4 +65,15 @@ export const getLiveStatsSchema = {
 export const getCategoryRevenueSchema = {
   tags: ['Admin Dashboard'],
   summary: 'Revenue breakdown by category (for donut chart)',
+}
+
+export const getOverviewSchema = {
+  tags: ['Admin Dashboard'],
+  summary: 'Accurate overview: net revenue, orders that stood, refunds, cancellations, daily series, hours, top products, categories, channels, live counts',
+  querystring: {
+    type: 'object',
+    properties: {
+      period: { type: 'string', enum: ['today', 'week', 'month', 'year'], default: 'week' },
+    },
+  },
 }

@@ -129,15 +129,25 @@ export class RequirementsRepository {
          SELECT e.product_id, SUM(CASE WHEN e.status = 'ORDERED' THEN e.expected_qty ELSE e.owed_qty END)::int AS q
            FROM procurement_entries e WHERE e.status = 'ORDERED' OR (e.status = 'ACTIVE' AND e.owed_qty > 0) GROUP BY 1),
        lastbuy AS (
-         SELECT DISTINCT ON (e.product_id) e.product_id, e.unit_price, v.name AS vendor_name
-           FROM procurement_entries e JOIN vendors v ON v.id = e.vendor_id WHERE e.status = 'ACTIVE' ORDER BY e.product_id, e.procured_on DESC, e.created_at DESC)
+         SELECT DISTINCT ON (e.product_id) e.product_id, e.unit_price, v.name AS vendor_name, v.id AS vendor_id
+           FROM procurement_entries e JOIN vendors v ON v.id = e.vendor_id AND v.is_active WHERE e.status = 'ACTIVE' ORDER BY e.product_id, e.procured_on DESC, e.created_at DESC),
+       -- the suppliers we usually buy each product from (most recent first, at most 4), each with the price of the latest purchase
+       vend AS (
+         SELECT product_id, jsonb_agg(jsonb_build_object('vendorId', vendor_id, 'name', name, 'price', price, 'on', last_on, 'times', n) ORDER BY last_on DESC) AS list
+           FROM (SELECT x.*, ROW_NUMBER() OVER (PARTITION BY x.product_id ORDER BY x.last_on DESC, x.n DESC) AS rn
+                   FROM (SELECT e.product_id, e.vendor_id, v.name, (ARRAY_AGG(e.unit_price ORDER BY e.procured_on DESC, e.created_at DESC))[1] AS price,
+                                to_char(MAX(e.procured_on), 'YYYY-MM-DD') AS last_on, COUNT(*)::int AS n
+                           FROM procurement_entries e JOIN vendors v ON v.id = e.vendor_id AND v.is_active
+                          WHERE e.status IN ('ACTIVE', 'ORDERED') GROUP BY e.product_id, e.vendor_id, v.name) x) r
+          WHERE rn <= 4 GROUP BY product_id)
        SELECT p.id AS product_id, p.name, p.net_quantity AS unit, p.thumbnail_url AS image_url,
               COALESCE(conf.q, 0) AS confirmed, COALESCE(inq.q, 0) AS inquiry, COALESCE(app.q, 0) AS app_orders,
               COALESCE(st.low, 0) AS shop_low, COALESCE(st.stock, 0) AS store_stock, GREATEST(COALESCE(ce.q, 0), 0) AS central_stock, COALESCE(inc.q, 0) AS incoming,
-              to_char(conf.first_due, 'YYYY-MM-DD') AS first_due, lastbuy.unit_price AS last_price, lastbuy.vendor_name AS last_vendor
+              to_char(conf.first_due, 'YYYY-MM-DD') AS first_due, lastbuy.unit_price AS last_price, lastbuy.vendor_name AS last_vendor, lastbuy.vendor_id AS last_vendor_id,
+              COALESCE(vend.list, '[]'::jsonb) AS vendors
          FROM products p
          LEFT JOIN conf ON conf.product_id = p.id LEFT JOIN inq ON inq.product_id = p.id LEFT JOIN app ON app.product_id = p.id
-         LEFT JOIN st ON st.product_id = p.id LEFT JOIN ce ON ce.product_id = p.id LEFT JOIN inc ON inc.product_id = p.id LEFT JOIN lastbuy ON lastbuy.product_id = p.id
+         LEFT JOIN st ON st.product_id = p.id LEFT JOIN ce ON ce.product_id = p.id LEFT JOIN inc ON inc.product_id = p.id LEFT JOIN lastbuy ON lastbuy.product_id = p.id LEFT JOIN vend ON vend.product_id = p.id
         WHERE COALESCE(conf.q, 0) + COALESCE(inq.q, 0) + COALESCE(app.q, 0) + COALESCE(st.low, 0) > 0
         ORDER BY p.name LIMIT 500`)
     return rows

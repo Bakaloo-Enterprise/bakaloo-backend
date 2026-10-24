@@ -57,17 +57,12 @@ describe('DashboardRepository — shop scoping (R17)', () => {
   })
 
   it('getKpis maps every field the dashboard HQDashboardKPI type expects', async () => {
-    mockAllQueries({
-      total_revenue: '1000.50', total_orders: 10, avg_order_value: '100.05', pending_orders: 2, total_customers: 5,
-      total_riders: 8, online_riders: 3,
-      total_shops: 1, active_shops: 1,
-    })
-    // getKpis delegates today/change figures to getStats('today', shopId),
-    // whose own internal fan-out is covered by getStats' own tests —
-    // stub it here so this test only asserts getKpis' own field mapping.
+    mockAllQueries({ total_riders: 8, online_riders: 3, total_shops: 1, active_shops: 1 })
+    // Order money comes from OverviewService (covered by the real-DB suite); stub it so this only asserts the mapping.
+    vi.spyOn(repo.overview, 'allTime').mockResolvedValue({ netRevenue: 1000.5, orders: { net: 10 }, buyers: 5, avgOrderValue: 100.05 })
     vi.spyOn(repo, 'getStats').mockResolvedValue({
       revenue: { current: 200, previous: 100, change_pct: 100, sparkline: [] },
-      orders: { current: 2, previous: 1, change_pct: 100, sparkline: [] },
+      orders: { current: 2, previous: 1, change_pct: 100, sparkline: [], new_orders: 2 },
       products: {}, customers: {}, riders: {}, today: {},
     })
 
@@ -92,19 +87,11 @@ describe('DashboardRepository — shop scoping (R17)', () => {
     )
   })
 
-  it('_todayStats filters by shop_id only when scoped', async () => {
-    mockAllQueries({ revenue: 0, orders: 0, cod_to_collect: 0, delivered: 0 })
+  it('_todayStats hands the shop filter to the overview (null = whole platform)', async () => {
+    const today = vi.spyOn(repo.overview, 'today').mockResolvedValue({ revenue: 0, orders: 0, cod_to_collect: 0, delivered: 0 })
     await repo._todayStats(null)
-    let [sql, params] = query.mock.calls[0]
-    expect(sql).not.toContain('AND shop_id')
-    expect(params).toEqual([])
-
-    vi.clearAllMocks()
-    mockAllQueries({ revenue: 0, orders: 0, cod_to_collect: 0, delivered: 0 })
     await repo._todayStats(SHOP_ID)
-    ;[sql, params] = query.mock.calls[0]
-    expect(sql).toContain('AND shop_id = $1')
-    expect(params).toEqual([SHOP_ID])
+    expect(today.mock.calls).toEqual([[null], [SHOP_ID]])
   })
 
   it('_productStats reads shop_products (not the global products catalog) when scoped', async () => {

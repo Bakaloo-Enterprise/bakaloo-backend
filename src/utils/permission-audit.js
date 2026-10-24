@@ -106,6 +106,7 @@ const PROTECTED_PREFIXES = Object.freeze([
   '/api/v1/shop-transactions',
   '/api/v1/shop-financials',
   '/api/v1/shop-orders',
+  '/api/v1/shop-dashboard',
   '/api/v1/shop-reports',
   '/api/v1/shop-coupons',
   '/api/v1/shop-audit-logs',

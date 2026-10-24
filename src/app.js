@@ -359,6 +359,7 @@ export const buildApp = async () => {
   await app.register(import('./modules/shop-orders/routes.js'), {
     prefix: '/api/v1/shop-orders',
   })
+  await app.register(import('./modules/shop-dashboard/shop-dashboard.routes.js'), { prefix: '/api/v1/shop-dashboard' })
   await app.register(import('./modules/pos/pos.routes.js'), { prefix: '/api/v1/pos' })
 
   // Shop Transactions — read-only append-only ledger

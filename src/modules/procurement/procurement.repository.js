@@ -413,4 +413,14 @@ export class ProcurementRepository {
          FROM UNNEST($1::uuid[]) AS x(product_id)`, [productIds, from, to])
     return rows
   }
+
+  /** For each supplier: the three products we buy from them most, and the day of the latest purchase. */
+  async vendorUsuals() {
+    const { rows } = await query(
+      `SELECT vendor_id, (ARRAY_AGG(name ORDER BY n DESC, last_on DESC))[1:3] AS products, to_char(MAX(last_on), 'YYYY-MM-DD') AS last_on
+         FROM (SELECT e.vendor_id, p.name, COUNT(*)::int AS n, MAX(e.procured_on) AS last_on
+                 FROM procurement_entries e JOIN products p ON p.id = e.product_id WHERE e.status IN ('ACTIVE', 'ORDERED') GROUP BY e.vendor_id, p.name) x
+        GROUP BY vendor_id`)
+    return rows
+  }
 }

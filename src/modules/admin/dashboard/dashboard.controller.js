@@ -11,6 +11,12 @@ export class DashboardController {
     return reply.send(success(data, 'Dashboard stats fetched'))
   }
 
+  async getOverview(request, reply) {
+    const { period = 'week' } = request.query
+    const data = await this.service.getOverview(period, request.shopId)
+    return reply.send(success(data, 'Overview fetched'))
+  }
+
   async getKpis(request, reply) {
     const data = await this.service.getKpis(request.shopId)
     return reply.send(success(data, 'Dashboard KPIs fetched'))

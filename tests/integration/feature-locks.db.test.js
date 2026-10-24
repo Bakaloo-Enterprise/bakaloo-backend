@@ -161,7 +161,7 @@ describe.skipIf(!enabled)('Feature locks and Developer Super Admin', () => {
   it('developer page data: features with their grants, and the developer list', async () => {
     await call('PUT', `/api/v1/admin/developer/features/procurement/grants/${ids.superAdmin}`, { token: tok.dev })
     const o = (await call('GET', '/api/v1/admin/developer/overview', { token: tok.dev })).json().data
-    expect(o.features.map((f) => f.key).sort()).toEqual(['business_analytics', 'catalog_bulk', 'procurement', 'store_pos', 'team_chat', 'whatsapp_crm'])
+    expect(o.features.map((f) => f.key).sort()).toEqual(['business_analytics', 'catalog_bulk', 'erp', 'procurement', 'store_pos', 'team_chat', 'whatsapp_crm'])
     expect(o.features.find((f) => f.key === 'procurement').grants.map((g) => g.userId)).toContain(ids.superAdmin)
     expect(o.developers.map((d) => d.id)).toEqual(expect.arrayContaining([ids.dev, ids.dev2]))
     expect((await call('GET', '/api/v1/admin/developer/users?search=T%20Super', { token: tok.dev })).json().data.map((x) => x.id)).toContain(ids.superAdmin)

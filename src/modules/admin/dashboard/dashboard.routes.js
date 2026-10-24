@@ -3,7 +3,7 @@ import { DashboardService } from './dashboard.service.js'
 import { DashboardController } from './dashboard.controller.js'
 import { requireShopScope } from '../../../middlewares/shop-scope.js'
 import {
-  getStatsSchema, getKpisSchema, getRevenueChartSchema, getOrdersByHourSchema,
+  getStatsSchema, getOverviewSchema, getKpisSchema, getRevenueChartSchema, getOrdersByHourSchema,
   getTopProductsSchema, getLowStockSchema, getPendingActionsSchema,
   getLiveStatsSchema, getCategoryRevenueSchema,
 } from './dashboard.schema.js'
@@ -29,6 +29,7 @@ export default async function dashboardRoutes(fastify) {
   const adminAuth = [fastify.authenticate, fastify.requireAdmin, shopScope]
 
   fastify.get('/stats', { schema: getStatsSchema, preHandler: adminAuth }, ctrl.getStats.bind(ctrl))
+  fastify.get('/overview', { schema: getOverviewSchema, preHandler: adminAuth }, ctrl.getOverview.bind(ctrl))
   fastify.get('/kpis', { schema: getKpisSchema, preHandler: adminAuth }, ctrl.getKpis.bind(ctrl))
   fastify.get('/revenue-chart', { schema: getRevenueChartSchema, preHandler: adminAuth }, ctrl.getRevenueChart.bind(ctrl))
   fastify.get('/orders-by-hour', { schema: getOrdersByHourSchema, preHandler: adminAuth }, ctrl.getOrdersByHour.bind(ctrl))

@@ -7,6 +7,10 @@ export class DashboardService {
     return this.repository.getStats(period, shopId)
   }
 
+  async getOverview(period = 'week', shopId = null) {
+    return this.repository.overview.overview({ period, shopId })
+  }
+
   async getKpis(shopId = null) {
     return this.repository.getKpis(shopId)
   }

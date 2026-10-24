@@ -16,6 +16,7 @@ export const FEATURE_PREFIXES = Object.freeze([
   ['/api/v1/admin/procurement', 'procurement'],
   ['/api/v1/admin/catalog-bulk', 'catalog_bulk'],
   ['/api/v1/admin/business-analytics', 'business_analytics'],
+  ['/api/v1/admin/erp', 'erp'],
   ['/api/v1/pos', 'store_pos'],
 ])
 

@@ -121,13 +121,20 @@ export class ShopsService {
   async getById(id) {
     const cacheKey = `${CACHE_PREFIX}:${id}`
     const cached = await cacheGet(cacheKey)
-    if (cached) return cached
+    if (cached) return (await this.#withSales([cached]))[0]
 
     const shop = await this.repo.findById(id)
     if (shop) {
       await cacheSet(cacheKey, shop, CACHE_TTL)
     }
-    return shop
+    return shop ? (await this.#withSales([shop]))[0] : shop
+  }
+
+  /** Overlay live lifetime sales (the stored counters are never updated). Skipped when the repo cannot provide them. */
+  async #withSales(shops) {
+    if (typeof this.repo.salesTotals !== 'function' || shops.length === 0) return shops
+    const totals = await this.repo.salesTotals(shops.map((s) => s.id))
+    return shops.map((s) => ({ ...s, total_orders: totals.get(s.id)?.total_orders ?? 0, total_revenue: totals.get(s.id)?.total_revenue ?? 0 }))
   }
 
   /**
@@ -138,7 +145,7 @@ export class ShopsService {
   async list(filters) {
     const { shops, total } = await this.repo.findMany(filters)
     return {
-      shops,
+      shops: await this.#withSales(shops),
       total,
       page: filters.page,
       limit: filters.limit,

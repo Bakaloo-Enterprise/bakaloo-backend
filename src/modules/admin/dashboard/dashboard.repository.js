@@ -1,7 +1,18 @@
 import { query } from '../../../config/database.js'
 import { redis } from '../../../config/redis.js'
+import { OverviewRepository } from './overview.repository.js'
+import { OverviewService } from './overview.service.js'
 
+/**
+ * Every order-money number here comes from OverviewService, which builds on the shared sales rules
+ * (business-analytics/sales-rules.js). Do not re-derive "revenue" or "orders" in this file: a sale is an order that was
+ * placed and not cancelled, a refund is subtracted on the day it was paid back, and a fully refunded order is not an order.
+ */
 export class DashboardRepository {
+  constructor(overview = new OverviewService({ repo: new OverviewRepository() })) {
+    this.overview = overview
+  }
+
   /**
    * Enhanced dashboard stats with comparison period + sparklines
    * @param {'today'|'week'|'month'} period
@@ -10,18 +21,28 @@ export class DashboardRepository {
    *   scoping — a shop-staff caller must only see their own numbers).
    */
   async getStats(period, shopId = null) {
-    const { currentStart, previousStart, previousEnd, days } = this._periodRange(period)
-
-    const [revenue, orders, products, customers, riders, today] = await Promise.all([
-      this._revenueStats(currentStart, previousStart, previousEnd, days, shopId),
-      this._orderStats(currentStart, previousStart, previousEnd, days, shopId),
-      this._productStats(currentStart, previousStart, previousEnd, shopId),
-      this._customerStats(currentStart, previousStart, previousEnd, shopId),
+    const [ov, products, riders, today] = await Promise.all([
+      this.overview.overview({ period, shopId, topLimit: 1 }),
+      this._productStats(null, null, null, shopId),
       this._riderStats(),
       this._todayStats(shopId),
     ])
-
-    return { revenue, orders, products, customers, riders, today }
+    const c = ov.comparison
+    return {
+      revenue: { current: ov.money.netRevenue, previous: c.netRevenue.previous, change_pct: c.netRevenue.changePct ?? 0, sparkline: ov.series.map((d) => d.net),
+        gross: ov.money.grossSales, refunds: ov.money.refunds, cancelled_value: ov.money.cancelledValue },
+      orders: { current: ov.orders.net, previous: c.orders.previous, change_pct: c.orders.changePct ?? 0, sparkline: ov.series.map((d) => d.orders),
+        placed: ov.orders.placed, refunded: ov.orders.fullyRefunded, cancelled: ov.orders.cancelled, awaiting_payment: ov.live.awaitingPayment, new_orders: ov.live.newOrders },
+      products,
+      customers: {
+        current: ov.customers.registered ?? ov.customers.buyers,
+        new_this_period: ov.customers.joinedInPeriod ?? ov.customers.newBuyers,
+        change_pct: 0,
+        repeat_rate: ov.customers.repeatRatePct ?? 0,
+      },
+      riders,
+      today,
+    }
   }
 
   /**
@@ -31,21 +52,8 @@ export class DashboardRepository {
    * leaking the platform-wide shop count to shop staff.
    */
   async getKpis(shopId = null) {
-    const orderParams = []
-    let orderShopFilter = ''
-    if (shopId) { orderParams.push(shopId); orderShopFilter = ` AND shop_id = $${orderParams.length}` }
-
-    const [orderRow, riderRow, shopRow, daily] = await Promise.all([
-      query(
-        `SELECT COALESCE(SUM(total_amount), 0) AS total_revenue,
-                COUNT(*)::int AS total_orders,
-                COALESCE(AVG(total_amount), 0) AS avg_order_value,
-                COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_orders,
-                COUNT(DISTINCT user_id)::int AS total_customers
-           FROM orders
-          WHERE payment_status = 'PAID' AND status != 'CANCELLED'${orderShopFilter}`,
-        orderParams
-      ),
+    const [allTime, riderRow, shopRow, daily] = await Promise.all([
+      this.overview.allTime(shopId),
       query(
         `SELECT COUNT(*)::int AS total_riders,
                 COUNT(*) FILTER (WHERE is_online = true)::int AS online_riders
@@ -66,20 +74,19 @@ export class DashboardRepository {
       this.getStats('today', shopId),
     ])
 
-    const o = orderRow.rows[0]
     const r = riderRow.rows[0]
     const s = shopRow.rows[0]
 
     return {
-      totalRevenue: parseFloat(o.total_revenue),
-      totalOrders: o.total_orders,
-      totalCustomers: o.total_customers,
+      totalRevenue: allTime.netRevenue,
+      totalOrders: allTime.orders.net,
+      totalCustomers: allTime.buyers,
       totalShops: s.total_shops,
       activeShops: s.active_shops,
       totalRiders: r.total_riders,
       onlineRiders: r.online_riders,
-      avgOrderValue: parseFloat(o.avg_order_value),
-      pendingOrders: o.pending_orders,
+      avgOrderValue: allTime.avgOrderValue ?? 0,
+      pendingOrders: daily.orders.new_orders ?? 0,
       todayRevenue: daily.revenue.current,
       todayOrders: daily.orders.current,
       revenueChange: daily.revenue.change_pct,
@@ -88,81 +95,17 @@ export class DashboardRepository {
   }
 
   async getRevenueChart(days = 7, shopId = null) {
-    const params = [days]
-    let shopFilter = ''
-    if (shopId) { params.push(shopId); shopFilter = ` AND shop_id = $${params.length}` }
-
-    const { rows } = await query(
-      `SELECT
-         DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS date,
-         COUNT(*) AS orders,
-         COALESCE(SUM(total_amount), 0) AS revenue,
-         COALESCE(AVG(total_amount), 0) AS avg_order_value,
-         COALESCE(SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END), 0) AS cod_revenue
-       FROM orders
-       WHERE created_at >= NOW() - make_interval(days => $1)
-         AND payment_status = 'PAID'
-         AND status != 'CANCELLED'${shopFilter}
-       GROUP BY date
-       ORDER BY date ASC`,
-      params
-    )
-    return rows.map(r => ({
-      date: r.date,
-      orders: parseInt(r.orders),
-      revenue: parseFloat(r.revenue),
-      avgOrderValue: parseFloat(r.avg_order_value),
-      codRevenue: parseFloat(r.cod_revenue),
-    }))
+    return this.overview.dailySeries(days, shopId)
   }
 
   async getOrdersByHour(shopId = null) {
-    const params = []
-    let shopFilter = ''
-    if (shopId) { params.push(shopId); shopFilter = ` AND shop_id = $${params.length}` }
-
-    const { rows } = await query(
-      `SELECT
-         EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS hour,
-         COUNT(*)::int AS order_count
-       FROM orders
-       WHERE created_at >= NOW() - INTERVAL '30 days'${shopFilter}
-       GROUP BY hour
-       ORDER BY hour`,
-      params
-    )
-    const avg = rows.length > 0
-      ? rows.reduce((s, r) => s + r.order_count, 0) / 24
-      : 0
-    return { hours: rows, avgOrders: Math.round(avg) }
+    const hours = await this.overview.hourly(30, shopId)
+    const total = hours.reduce((t, r) => t + r.order_count, 0)
+    return { hours, avgOrders: Math.round(total / 24) }
   }
 
   async getTopProducts(limit = 10, shopId = null) {
-    const params = [limit]
-    let shopFilter = ''
-    if (shopId) { params.push(shopId); shopFilter = ` AND o.shop_id = $${params.length}` }
-
-    const { rows } = await query(
-      `SELECT
-         p.id, p.name, p.thumbnail_url,
-         COUNT(oi.id)::int AS units_sold,
-         COALESCE(SUM(oi.total), 0) AS revenue,
-         c.name AS category
-       FROM order_items oi
-       JOIN products p ON p.id = oi.product_id
-       LEFT JOIN categories c ON c.id = p.category_id
-       JOIN orders o ON o.id = oi.order_id
-       WHERE o.created_at >= NOW() - INTERVAL '30 days'
-         AND o.status = 'DELIVERED'${shopFilter}
-       GROUP BY p.id, p.name, p.thumbnail_url, c.name
-       ORDER BY revenue DESC
-       LIMIT $1`,
-      params
-    )
-    return rows.map(r => ({
-      ...r,
-      revenue: parseFloat(r.revenue),
-    }))
+    return this.overview.products(30, shopId, limit)
   }
 
   async getLowStockAlerts(threshold = 10, shopId = null) {
@@ -195,12 +138,17 @@ export class DashboardRepository {
     return rows
   }
 
+  /**
+   * "Pending orders" = orders waiting for the store to accept them (CONFIRMED) — the same number as "new orders" on the
+   * Command Center. Orders still waiting for the customer to pay are not orders yet; they are returned as awaiting_payment.
+   */
   async getPendingActions(shopId = null) {
     if (shopId) {
       const { rows } = await query(
         `SELECT
-           (SELECT COUNT(*) FROM orders WHERE status = 'PENDING' AND shop_id = $1)::int AS pending_orders,
+           (SELECT COUNT(*) FROM orders WHERE status = 'CONFIRMED' AND shop_id = $1)::int AS pending_orders,
            (SELECT COUNT(*) FROM orders WHERE status = 'CONFIRMED' AND shop_id = $1)::int AS confirmed_orders,
+           (SELECT COUNT(*) FROM orders WHERE status = 'PENDING' AND shop_id = $1 AND (payment_expires_at IS NULL OR payment_expires_at > NOW()))::int AS awaiting_payment,
            (SELECT COUNT(*) FROM rider_profiles WHERE is_approved = false)::int AS pending_riders,
            (SELECT COUNT(*) FROM shop_products WHERE shop_id = $1 AND is_available = true AND stock_quantity <= COALESCE(low_stock_threshold, 10))::int AS low_stock_products,
            (SELECT COUNT(*) FROM rider_payouts WHERE status = 'PENDING')::int AS pending_payouts`,
@@ -211,8 +159,9 @@ export class DashboardRepository {
 
     const { rows } = await query(
       `SELECT
-         (SELECT COUNT(*) FROM orders WHERE status = 'PENDING')::int AS pending_orders,
+         (SELECT COUNT(*) FROM orders WHERE status = 'CONFIRMED')::int AS pending_orders,
          (SELECT COUNT(*) FROM orders WHERE status = 'CONFIRMED')::int AS confirmed_orders,
+         (SELECT COUNT(*) FROM orders WHERE status = 'PENDING' AND (payment_expires_at IS NULL OR payment_expires_at > NOW()))::int AS awaiting_payment,
          (SELECT COUNT(*) FROM rider_profiles WHERE is_approved = false)::int AS pending_riders,
          (SELECT COUNT(*) FROM products WHERE is_active = true AND stock_quantity <= COALESCE(low_stock_threshold, 10))::int AS low_stock_products,
          (SELECT COUNT(*) FROM rider_payouts WHERE status = 'PENDING')::int AS pending_payouts`
@@ -229,112 +178,10 @@ export class DashboardRepository {
   }
 
   async getCategoryRevenue(shopId = null) {
-    const params = []
-    let shopFilter = ''
-    if (shopId) { params.push(shopId); shopFilter = ` AND o.shop_id = $${params.length}` }
-
-    const { rows } = await query(
-      `SELECT
-         c.name AS category,
-         COALESCE(SUM(oi.total), 0) AS revenue
-       FROM order_items oi
-       JOIN products p ON p.id = oi.product_id
-       JOIN categories c ON c.id = p.category_id
-       JOIN orders o ON o.id = oi.order_id
-       WHERE o.status != 'CANCELLED'
-         AND o.payment_status = 'PAID'
-         AND o.created_at >= NOW() - INTERVAL '30 days'${shopFilter}
-       GROUP BY c.name
-       ORDER BY revenue DESC`,
-      params
-    )
-    return rows.map(r => ({
-      category: r.category,
-      revenue: parseFloat(r.revenue),
-    }))
+    return this.overview.categoryRevenue(30, shopId)
   }
 
   // ─── PRIVATE HELPERS ────────────────────────────────
-
-  _periodRange(period) {
-    const now = new Date()
-    let days
-    switch (period) {
-      case 'today':
-        days = 1; break
-      case 'month':
-        days = 30; break
-      case 'week':
-      default:
-        days = 7; break
-    }
-    const currentStart = new Date(now - days * 86400000).toISOString()
-    const previousEnd = currentStart
-    const previousStart = new Date(now - days * 2 * 86400000).toISOString()
-    return { currentStart, previousStart, previousEnd, days }
-  }
-
-  async _revenueStats(currentStart, previousStart, previousEnd, days, shopId = null) {
-    const shopFilter = shopId ? ' AND shop_id = $2' : ''
-    const shopFilter2 = shopId ? ' AND shop_id = $3' : ''
-    const currentParams = shopId ? [currentStart, shopId] : [currentStart]
-    const previousParams = shopId ? [previousStart, previousEnd, shopId] : [previousStart, previousEnd]
-
-    const [current, previous, sparkline] = await Promise.all([
-      query(
-        `SELECT COALESCE(SUM(total_amount), 0) AS total
-         FROM orders WHERE payment_status = 'PAID' AND status != 'CANCELLED'
-           AND created_at >= $1${shopFilter}`, currentParams
-      ),
-      query(
-        `SELECT COALESCE(SUM(total_amount), 0) AS total
-         FROM orders WHERE payment_status = 'PAID' AND status != 'CANCELLED'
-           AND created_at >= $1 AND created_at < $2${shopFilter2}`, previousParams
-      ),
-      query(
-        `SELECT COALESCE(SUM(total_amount), 0)::numeric AS rev
-         FROM orders
-         WHERE payment_status = 'PAID' AND status != 'CANCELLED'
-           AND created_at >= $1${shopFilter}
-         GROUP BY DATE(created_at AT TIME ZONE 'Asia/Kolkata')
-         ORDER BY DATE(created_at AT TIME ZONE 'Asia/Kolkata') ASC`, currentParams
-      ),
-    ])
-    const cur = parseFloat(current.rows[0].total)
-    const prev = parseFloat(previous.rows[0].total)
-    return {
-      current: cur,
-      previous: prev,
-      change_pct: prev > 0 ? parseFloat(((cur - prev) / prev * 100).toFixed(1)) : 0,
-      sparkline: sparkline.rows.map(r => parseFloat(r.rev)),
-    }
-  }
-
-  async _orderStats(currentStart, previousStart, previousEnd, days, shopId = null) {
-    const shopFilter = shopId ? ' AND shop_id = $2' : ''
-    const shopFilter2 = shopId ? ' AND shop_id = $3' : ''
-    const currentParams = shopId ? [currentStart, shopId] : [currentStart]
-    const previousParams = shopId ? [previousStart, previousEnd, shopId] : [previousStart, previousEnd]
-
-    const [current, previous, sparkline] = await Promise.all([
-      query(`SELECT COUNT(*)::int AS total FROM orders WHERE created_at >= $1${shopFilter}`, currentParams),
-      query(`SELECT COUNT(*)::int AS total FROM orders WHERE created_at >= $1 AND created_at < $2${shopFilter2}`, previousParams),
-      query(
-        `SELECT COUNT(*)::int AS cnt
-         FROM orders WHERE created_at >= $1${shopFilter}
-         GROUP BY DATE(created_at AT TIME ZONE 'Asia/Kolkata')
-         ORDER BY DATE(created_at AT TIME ZONE 'Asia/Kolkata') ASC`, currentParams
-      ),
-    ])
-    const cur = current.rows[0].total
-    const prev = previous.rows[0].total
-    return {
-      current: cur,
-      previous: prev,
-      change_pct: prev > 0 ? parseFloat(((cur - prev) / prev * 100).toFixed(1)) : 0,
-      sparkline: sparkline.rows.map(r => r.cnt),
-    }
-  }
 
   /**
    * Shop-scoped product counts read shop_products (the per-shop stock
@@ -368,57 +215,6 @@ export class DashboardRepository {
   }
 
   /**
-   * Customer counts. Unscoped (HQ) reads the users table directly (all
-   * registered customers). Shop-scoped reads distinct customers who have
-   * actually ordered from that shop — the users table has no shop
-   * affiliation, so "my shop's customers" can only be derived from orders.
-   */
-  async _customerStats(currentStart, previousStart, previousEnd, shopId = null) {
-    if (shopId) {
-      const [total, newCustomers, repeat] = await Promise.all([
-        query(`SELECT COUNT(DISTINCT user_id)::int AS total FROM orders WHERE shop_id = $1 AND status != 'CANCELLED'`, [shopId]),
-        query(`SELECT COUNT(DISTINCT user_id)::int AS total FROM orders WHERE shop_id = $1 AND status != 'CANCELLED' AND created_at >= $2`, [shopId, currentStart]),
-        query(
-          `SELECT COUNT(*)::int AS total FROM (
-             SELECT user_id FROM orders
-             WHERE shop_id = $1 AND status != 'CANCELLED'
-             GROUP BY user_id HAVING COUNT(*) > 1
-           ) sub`,
-          [shopId]
-        ),
-      ])
-      const totalCount = total.rows[0].total
-      const repeatCount = repeat.rows[0].total
-      return {
-        current: totalCount,
-        new_this_period: newCustomers.rows[0].total,
-        change_pct: 0,
-        repeat_rate: totalCount > 0 ? parseFloat((repeatCount / totalCount * 100).toFixed(1)) : 0,
-      }
-    }
-
-    const [total, newCustomers, repeat] = await Promise.all([
-      query(`SELECT COUNT(*)::int AS total FROM users WHERE role = 'CUSTOMER'`),
-      query(`SELECT COUNT(*)::int AS total FROM users WHERE role = 'CUSTOMER' AND created_at >= $1`, [currentStart]),
-      query(
-        `SELECT COUNT(*)::int AS total FROM (
-           SELECT user_id FROM orders
-           WHERE status != 'CANCELLED'
-           GROUP BY user_id HAVING COUNT(*) > 1
-         ) sub`
-      ),
-    ])
-    const totalCount = total.rows[0].total
-    const repeatCount = repeat.rows[0].total
-    return {
-      current: totalCount,
-      new_this_period: newCustomers.rows[0].total,
-      change_pct: 0, // computed from comparison period in sparkline
-      repeat_rate: totalCount > 0 ? parseFloat((repeatCount / totalCount * 100).toFixed(1)) : 0,
-    }
-  }
-
-  /**
    * Riders are a shared platform-wide pool, not owned by any one shop
    * (a rider can deliver for any shop) — intentionally NOT shop-scoped.
    */
@@ -447,32 +243,8 @@ export class DashboardRepository {
     }
   }
 
+  /** IST-today figures: net sales, orders that stood, COD still to collect, orders delivered today. */
   async _todayStats(shopId = null) {
-    // IST calendar day, not the DB session's (UTC) day — matches every
-    // other date-bucketing query in this file. A raw CURRENT_DATE compare
-    // is offset from IST midnight by 5:30, so it double-counts part of
-    // yesterday's IST orders before 05:30 IST and drops this morning's
-    // orders (00:00-05:30 IST) once the UTC day rolls over.
-    const params = []
-    let shopFilter = ''
-    if (shopId) { params.push(shopId); shopFilter = ` AND shop_id = $${params.length}` }
-
-    const { rows } = await query(
-      `SELECT
-         COALESCE(SUM(total_amount), 0) AS revenue,
-         COUNT(*)::int AS orders,
-         COALESCE(SUM(CASE WHEN payment_method = 'COD' AND status != 'DELIVERED' THEN total_amount ELSE 0 END), 0) AS cod_to_collect,
-         COUNT(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered
-       FROM orders
-       WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date${shopFilter}`,
-      params
-    )
-    const r = rows[0]
-    return {
-      revenue: parseFloat(r.revenue),
-      orders: r.orders,
-      cod_to_collect: parseFloat(r.cod_to_collect),
-      delivered: r.delivered,
-    }
+    return this.overview.today(shopId)
   }
 }

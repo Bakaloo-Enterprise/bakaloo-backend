@@ -59,20 +59,24 @@ export class AdminAnalyticsService {
       { header: 'Value', key: 'value', width: 20 },
     ]
     summarySheet.addRows([
-      { metric: 'Total Revenue', value: sales.summary.total_revenue },
-      { metric: 'Total Orders', value: sales.summary.total_orders },
+      { metric: 'Sold (before refunds)', value: sales.summary.gross_sales },
+      { metric: 'Refunds', value: sales.summary.total_refunds },
+      { metric: 'Money kept (sold − refunds)', value: sales.summary.total_revenue },
+      { metric: 'Orders that stood', value: sales.summary.total_orders },
       { metric: 'Average Order Value', value: sales.summary.avg_order_value },
       { metric: 'Unique Customers', value: sales.summary.unique_customers },
       { metric: 'Total Discounts', value: sales.summary.total_discounts },
-      { metric: 'Gross Revenue', value: financial.revenue.gross },
-      { metric: 'Net Revenue', value: financial.revenue.net },
+      { metric: 'Billed to customers (gross)', value: financial.revenue.gross },
+      { metric: 'Net after refunds', value: financial.revenue.net },
       { metric: 'Delivery Fees', value: financial.revenue.delivery_fees },
     ])
 
     const dailySheet = workbook.addWorksheet('Daily Sales')
     dailySheet.columns = [
       { header: 'Date', key: 'period', width: 14 },
-      { header: 'Revenue (₹)', key: 'revenue', width: 16 },
+      { header: 'Money kept (₹)', key: 'revenue', width: 16 },
+      { header: 'Sold (₹)', key: 'gross_sales', width: 14 },
+      { header: 'Refunds (₹)', key: 'refunds', width: 14 },
       { header: 'Orders', key: 'orders', width: 12 },
       { header: 'Avg Order Value (₹)', key: 'avg_order_value', width: 18 },
       { header: 'Discount (₹)', key: 'total_discount', width: 14 },
@@ -126,8 +130,10 @@ export class AdminAnalyticsService {
       doc.moveDown(0.5)
       doc.fontSize(10)
       const s = sales.summary
-      doc.text(`Total Revenue: ₹${s.total_revenue.toLocaleString('en-IN')}`)
-      doc.text(`Total Orders: ${s.total_orders}`)
+      doc.text(`Sold (before refunds): ₹${s.gross_sales.toLocaleString('en-IN')}`)
+      doc.text(`Refunds: ₹${s.total_refunds.toLocaleString('en-IN')}`)
+      doc.text(`Money kept: ₹${s.total_revenue.toLocaleString('en-IN')}`)
+      doc.text(`Orders that stood: ${s.total_orders}`)
       doc.text(`Average Order Value: ₹${s.avg_order_value.toFixed(2)}`)
       doc.text(`Unique Customers: ${s.unique_customers}`)
       doc.text(`Total Discounts: ₹${s.total_discounts.toLocaleString('en-IN')}`)
@@ -138,8 +144,9 @@ export class AdminAnalyticsService {
       doc.moveDown(0.5)
       doc.fontSize(10)
       const f = financial.revenue
-      doc.text(`Gross Revenue: ₹${f.gross.toLocaleString('en-IN')}`)
-      doc.text(`Net Revenue: ₹${f.net.toLocaleString('en-IN')}`)
+      doc.text(`Billed to customers: ₹${f.gross.toLocaleString('en-IN')}`)
+      doc.text(`Refunds: ₹${f.refunds.toLocaleString('en-IN')}`)
+      doc.text(`Net after refunds: ₹${f.net.toLocaleString('en-IN')}`)
       doc.text(`Delivery Fees: ₹${f.delivery_fees.toLocaleString('en-IN')}`)
       doc.moveDown()
 

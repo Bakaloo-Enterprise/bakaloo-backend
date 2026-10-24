@@ -239,6 +239,13 @@ export class ShopProductsRepository {
     return rows[0] || null
   }
 
+  /** Products at or below their low-stock level (same rule as the inventory list's low_stock filter). */
+  async countLowStock(shopId) {
+    const { rows } = await query(
+      `SELECT COUNT(*)::int AS n FROM shop_products WHERE shop_id = $1 AND deleted_at IS NULL AND stock_quantity <= low_stock_threshold`, [shopId])
+    return rows[0].n
+  }
+
   /**
    * List shop_products for a shop with filters and pagination.
    * Joins products (name, sku, thumbnail_url, category) and shops (name) so

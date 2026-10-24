@@ -1,38 +1,37 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
+import { resolveWindow, windowOfDays } from '../../../../src/modules/admin/dashboard/overview.service.js'
 
-vi.mock('../../../../src/config/database.js', () => ({
-  query: vi.fn().mockResolvedValue({
-    rows: [{ revenue: 0, orders: 0, cod_to_collect: 0, delivered: 0 }],
-  }),
-}))
-
-vi.mock('../../../../src/config/redis.js', () => ({
-  redis: {},
-}))
-
-import { DashboardRepository } from '../../../../src/modules/admin/dashboard/dashboard.repository.js'
-import { query } from '../../../../src/config/database.js'
-
-describe('DashboardRepository._todayStats — IST calendar day, not DB-session UTC day', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    query.mockResolvedValue({
-      rows: [{ revenue: 0, orders: 0, cod_to_collect: 0, delivered: 0 }],
-    })
+// "Today" is an India calendar day (IST = UTC+5:30), never the database's UTC day or a rolling 24 hours.
+describe('Overview windows — India calendar days', () => {
+  it('today starts at IST midnight even when the UTC date is still yesterday', () => {
+    // 2026-10-10 20:00 UTC = 2026-10-11 01:30 IST → "today" is 11 Oct, which began at 2026-10-10T18:30Z
+    const w = resolveWindow('today', new Date('2026-10-10T20:00:00Z'))
+    expect(w.start.toISOString()).toBe('2026-10-10T18:30:00.000Z')
+    expect(w.end.toISOString()).toBe('2026-10-11T18:30:00.000Z')
+    expect(w.to).toBe('2026-10-11')
   })
 
-  it('filters by the IST calendar day instead of a raw CURRENT_DATE compare', async () => {
-    const repo = new DashboardRepository()
-    await repo._todayStats()
+  it('today at 23:59 IST still belongs to the same day', () => {
+    const w = resolveWindow('today', new Date('2026-10-11T18:29:00Z'))
+    expect(w.to).toBe('2026-10-11')
+    expect(w.end.toISOString()).toBe('2026-10-11T18:30:00.000Z')
+  })
 
-    const [sql] = query.mock.calls[0]
-    expect(sql).toContain(
-      "(created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date"
-    )
-    // Guard against regressing back to the UTC-day bug this replaces —
-    // a bare CURRENT_DATE compare is 5:30 off from IST midnight, which
-    // double-counts part of yesterday before 05:30 IST and drops this
-    // morning's orders once the UTC day rolls over.
-    expect(sql).not.toContain('created_at::date = CURRENT_DATE')
+  it('week = the last 7 India days including today, compared with the 7 days before', () => {
+    const w = resolveWindow('week', new Date('2026-10-11T06:00:00Z'))
+    expect(w.days).toBe(7)
+    expect(w.from).toBe('2026-10-05')
+    expect(w.to).toBe('2026-10-11')
+    expect(w.prevEnd.getTime()).toBe(w.start.getTime())
+    expect(w.start.getTime() - w.prevStart.getTime()).toBe(7 * 86_400_000)
+  })
+
+  it('year is supported (the dashboard has a This Year tab)', () => {
+    expect(resolveWindow('year', new Date('2026-10-11T06:00:00Z')).days).toBe(365)
+  })
+
+  it('rejects an unknown period', () => {
+    expect(() => resolveWindow('decade')).toThrow(/Period must be/)
+    expect(windowOfDays(30, new Date('2026-10-11T06:00:00Z')).from).toBe('2026-09-12')
   })
 })

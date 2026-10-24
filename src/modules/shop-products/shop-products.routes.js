@@ -112,6 +112,24 @@ export default async function shopProductRoutes(fastify) {
     controller.list.bind(controller)
   )
 
+  // ── GET /low-stock-count — how many of this store's products are at or below their low-stock level.
+  // Declared before /:id so it can never be read as an id. Same definition as the list's low_stock=true filter.
+  fastify.get(
+    '/low-stock-count',
+    {
+      schema: {
+        tags: ['Shop Products'],
+        summary: 'Count of low-stock products in this store [Shop Staff+]',
+        security: [{ bearerAuth: [] }],
+      },
+      preHandler: readPreHandlers,
+    },
+    async (request, reply) => {
+      if (!request.shopId) return reply.code(400).send({ success: false, message: 'Pick a store first (X-Shop-Id).', code: 'SHOP_SCOPE_REQUIRED' })
+      return { success: true, data: { count: await repository.countLowStock(request.shopId) } }
+    }
+  )
+
   // ── GET /:id — Get a single shop product ────────────────
   fastify.get(
     '/:id',

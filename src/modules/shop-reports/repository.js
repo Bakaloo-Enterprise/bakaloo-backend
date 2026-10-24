@@ -9,6 +9,7 @@
  */
 
 import { query } from '../../config/database.js'
+import { salesReports, scopeOf } from '../reports-shared/sales-reports.js'
 
 export class ShopReportsRepository {
   /**
@@ -40,164 +41,27 @@ export class ShopReportsRepository {
   /**
    * GMV — shop-scoped gross merchandise value.
    */
-  async getGmv(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const allConditions = ['shop_id = $1', ...conditions]
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT DATE(created_at)) as total FROM orders ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT DATE(created_at) as date, SUM(total_amount) as gmv, COUNT(id) as order_count
-       FROM orders ${where}
-       GROUP BY DATE(created_at)
-       ORDER BY date DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getGmv(shopId, filters, page, limit) { return salesReports.gmv(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Orders — shop-scoped order breakdown.
    */
-  async getOrders(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const allConditions = ['shop_id = $1', ...conditions]
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT DATE(created_at)) as total FROM orders ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT DATE(created_at) as date, status, COUNT(id) as count
-       FROM orders ${where}
-       GROUP BY DATE(created_at), status
-       ORDER BY date DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getOrders(shopId, filters, page, limit) { return salesReports.orders(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Revenue — shop-scoped net revenue.
    */
-  async getRevenue(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const allConditions = ['shop_id = $1', ...conditions]
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT DATE(created_at)) as total FROM orders ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT DATE(created_at) as date,
-              SUM(total_amount) as gross_revenue,
-              SUM(CASE WHEN status = 'REFUNDED' THEN total_amount ELSE 0 END) as refunded,
-              SUM(CASE WHEN status != 'REFUNDED' THEN total_amount ELSE 0 END) as net_revenue
-       FROM orders ${where}
-       GROUP BY DATE(created_at)
-       ORDER BY date DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getRevenue(shopId, filters, page, limit) { return salesReports.revenue(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Refunds — shop-scoped refund data.
    */
-  async getRefunds(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const allConditions = ['shop_id = $1', ...conditions, "status = 'REFUNDED'"]
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT DATE(created_at)) as total FROM orders ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT DATE(created_at) as date, COUNT(id) as refund_count, SUM(total_amount) as refund_amount
-       FROM orders ${where}
-       GROUP BY DATE(created_at)
-       ORDER BY date DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getRefunds(shopId, filters, page, limit) { return salesReports.refunds(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Top products — shop-scoped, ranked by quantity sold.
    */
-  async getTopProducts(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const prefixed = conditions.map((c) => c.replace('created_at', 'o.created_at'))
-    const allConditions = ['o.shop_id = $1', ...prefixed]
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT oi.product_id) as total
-       FROM order_items oi
-       JOIN orders o ON o.id = oi.order_id
-       ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT oi.product_id, p.name as product_name,
-              SUM(oi.quantity) as total_quantity,
-              SUM(oi.price * oi.quantity) as total_revenue
-       FROM order_items oi
-       JOIN orders o ON o.id = oi.order_id
-       JOIN products p ON p.id = oi.product_id
-       ${where}
-       GROUP BY oi.product_id, p.name
-       ORDER BY total_quantity DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getTopProducts(shopId, filters, page, limit) { return salesReports.products(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Low stock — shop-scoped products with stock <= 10.
@@ -269,72 +133,12 @@ export class ShopReportsRepository {
   /**
    * Rider performance — shop-scoped delivery metrics.
    */
-  async getRiderPerformance(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const prefixed = conditions.map((c) => c.replace('created_at', 'o.created_at'))
-    const allConditions = ['o.shop_id = $1', ...prefixed, 'o.rider_id IS NOT NULL']
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT o.rider_id) as total FROM orders o ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT o.rider_id, u.name as rider_name,
-              COUNT(o.id) as deliveries,
-              AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.assigned_at))) as avg_delivery_seconds
-       FROM orders o
-       JOIN users u ON u.id = o.rider_id
-       ${where}
-       GROUP BY o.rider_id, u.name
-       ORDER BY deliveries DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getRiderPerformance(shopId, filters, page, limit) { return salesReports.riders(scopeOf(filters, [shopId]), page, limit, { shopShape: true }) }
 
   /**
    * Coupon usage — shop-scoped coupon redemption stats.
    */
-  async getCouponUsage(shopId, filters, page, limit) {
-    const offset = (page - 1) * limit
-    const { conditions, values, nextIndex } = this._buildDateFilters(filters)
-    const prefixed = conditions.map((c) => c.replace('created_at', 'o.created_at'))
-    const allConditions = ['o.shop_id = $1', ...prefixed, 'o.coupon_code IS NOT NULL']
-    const where = `WHERE ${allConditions.join(' AND ')}`
-    const allValues = [shopId, ...values]
-
-    const countResult = await query(
-      `SELECT COUNT(DISTINCT o.coupon_code) as total FROM orders o ${where}`,
-      allValues
-    )
-
-    const dataResult = await query(
-      `SELECT c.id AS coupon_id, o.coupon_code AS coupon_code,
-              COUNT(o.id) as usage_count,
-              SUM(o.discount_amount) as total_discount
-       FROM orders o
-       LEFT JOIN coupons c ON c.code = o.coupon_code
-       ${where}
-       GROUP BY c.id, o.coupon_code
-       ORDER BY usage_count DESC
-       LIMIT $${nextIndex} OFFSET $${nextIndex + 1}`,
-      [...allValues, limit, offset]
-    )
-
-    return {
-      data: dataResult.rows,
-      total: parseInt(countResult.rows[0]?.total || '0', 10),
-    }
-  }
+  async getCouponUsage(shopId, filters, page, limit) { return salesReports.coupons(scopeOf(filters, [shopId]), page, limit) }
 
   /**
    * Settlement — shop-scoped transaction/payout history.

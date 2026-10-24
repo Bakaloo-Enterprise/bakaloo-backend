@@ -1,4 +1,5 @@
 import { query } from '../../config/database.js'
+import { CH, PLACED, CANCELLED, DAY_IST, REFUND_EVENTS_CTE, placedAs, channelOf } from './sales-rules.js'
 
 /**
  * Business Analytics queries (Phase 12). Everything is computed live from the real tables — no report tables, so a
@@ -10,11 +11,8 @@ import { query } from '../../config/database.js'
  * Channel: an order is B2B when it was placed by a business account — the GSTIN snapshot taken at order time or the
  * B2B credit flow marker. Everything else is B2C.
  */
-const CH = `(CASE WHEN o.buyer_gstin IS NOT NULL OR o.b2b_approval_status IS NOT NULL THEN 'B2B' ELSE 'B2C' END)`
 const ORDER_FILTER = `($3::uuid IS NULL OR o.shop_id = $3) AND ($4::text IS NULL OR ${CH} = $4)`
-/** An order that really happened: not still waiting for payment and not cancelled. Refunded orders count (refunds are shown separately). */
-const PLACED = `o.status NOT IN ('PENDING', 'CANCELLED')`
-const DAY_IST = `((o.created_at AT TIME ZONE 'Asia/Kolkata')::date)`
+// PLACED / CANCELLED / refund rules live in sales-rules.js — shared with the Overview so the two can never disagree.
 
 const one = async (sql, params) => (await query(sql, params)).rows[0]
 const many = async (sql, params) => (await query(sql, params)).rows
@@ -37,13 +35,10 @@ export class BusinessAnalyticsRepository {
    */
   async refunds(args) {
     return one(
-      `WITH req AS (SELECT order_id, SUM(refund_amount) AS amt, MAX(processed_at) AS at FROM refund_requests WHERE status = 'APPROVED' AND refund_amount IS NOT NULL GROUP BY order_id),
-            pay AS (SELECT order_id, SUM(refund_amount) AS amt, MAX(updated_at) AS at FROM payments WHERE refund_amount > 0 GROUP BY order_id),
-            ref AS (SELECT COALESCE(req.order_id, pay.order_id) AS order_id, COALESCE(req.amt, pay.amt) AS amt, COALESCE(req.at, pay.at) AS at
-                      FROM req FULL JOIN pay ON pay.order_id = req.order_id)
+      `WITH ${REFUND_EVENTS_CTE}
        SELECT COUNT(*)::int AS n, COALESCE(SUM(ref.amt), 0)::numeric(14,2) AS amount
-         FROM ref JOIN orders o ON o.id = ref.order_id
-        WHERE o.status <> 'CANCELLED' AND ref.at >= $1 AND ref.at < $2 AND ${ORDER_FILTER}`, args)
+         FROM refund_events ref JOIN orders o ON o.id = ref.order_id
+        WHERE NOT ${CANCELLED} AND ref.at >= $1 AND ref.at < $2 AND ${ORDER_FILTER}`, args)
   }
 
   /** Orders cancelled in the period AFTER they had been confirmed (an unpaid order that expired is not leakage). */
@@ -52,7 +47,7 @@ export class BusinessAnalyticsRepository {
       `SELECT COUNT(*)::int AS n, COALESCE(SUM(o.total_amount), 0)::numeric(14,2) AS amount
          FROM orders o
          JOIN LATERAL (SELECT MAX(h.changed_at) AS at FROM order_status_history h WHERE h.order_id = o.id AND h.to_status = 'CANCELLED') c ON TRUE
-        WHERE o.status = 'CANCELLED' AND c.at >= $1 AND c.at < $2
+        WHERE ${CANCELLED} AND c.at >= $1 AND c.at < $2
           AND EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id AND h.to_status = 'CONFIRMED') AND ${ORDER_FILTER}`, args)
   }
 
@@ -125,8 +120,8 @@ export class BusinessAnalyticsRepository {
     const cur = await many(
       `SELECT oi.product_id, p.name, p.sku, SUM(oi.quantity)::int AS units, SUM(oi.total)::numeric(14,2) AS revenue, COUNT(DISTINCT o.id)::int AS orders, COUNT(DISTINCT o.user_id)::int AS buyers,
               (SELECT COUNT(*) FROM (SELECT o2.user_id FROM order_items oi2 JOIN orders o2 ON o2.id = oi2.order_id
-                                      WHERE oi2.product_id = oi.product_id AND o2.status NOT IN ('PENDING','CANCELLED') AND o2.created_at >= $1 AND o2.created_at < $2
-                                        AND ($3::uuid IS NULL OR o2.shop_id = $3) AND ($4::text IS NULL OR (CASE WHEN o2.buyer_gstin IS NOT NULL OR o2.b2b_approval_status IS NOT NULL THEN 'B2B' ELSE 'B2C' END) = $4)
+                                      WHERE oi2.product_id = oi.product_id AND ${placedAs('o2')} AND o2.created_at >= $1 AND o2.created_at < $2
+                                        AND ($3::uuid IS NULL OR o2.shop_id = $3) AND ($4::text IS NULL OR ${channelOf('o2')} = $4)
                                       GROUP BY o2.user_id HAVING COUNT(DISTINCT o2.id) >= 2) rep)::int AS repeat_buyers
          FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
         WHERE ${PLACED} AND o.created_at >= $1 AND o.created_at < $2 AND ${ORDER_FILTER}
@@ -142,7 +137,7 @@ export class BusinessAnalyticsRepository {
   async customers(args, { limit }) {
     return many(
       `SELECT o.user_id, u.name, u.phone, MAX(ba.company_name) AS company, COUNT(*)::int AS orders, SUM(o.total_amount)::numeric(14,2) AS spend, MAX(o.created_at) AS last_order_at,
-              (SELECT COUNT(*) FROM orders o0 WHERE o0.user_id = o.user_id AND o0.status NOT IN ('PENDING','CANCELLED') AND o0.created_at < $1)::int AS earlier_orders,
+              (SELECT COUNT(*) FROM orders o0 WHERE o0.user_id = o.user_id AND ${placedAs('o0')} AND o0.created_at < $1)::int AS earlier_orders,
               BOOL_OR(o.buyer_gstin IS NOT NULL OR o.b2b_approval_status IS NOT NULL) AS is_b2b
          FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN business_accounts ba ON ba.user_id = o.user_id
         WHERE ${PLACED} AND o.created_at >= $1 AND o.created_at < $2 AND ${ORDER_FILTER}
@@ -153,13 +148,14 @@ export class BusinessAnalyticsRepository {
       `SELECT COUNT(*)::int AS customers,
               COUNT(*) FILTER (WHERE c.n >= 2 OR c.earlier > 0)::int AS repeat_customers
          FROM (SELECT o.user_id, COUNT(*) AS n,
-                      (SELECT COUNT(*) FROM orders o0 WHERE o0.user_id = o.user_id AND o0.status NOT IN ('PENDING','CANCELLED') AND o0.created_at < $1) AS earlier
+                      (SELECT COUNT(*) FROM orders o0 WHERE o0.user_id = o.user_id AND ${placedAs('o0')} AND o0.created_at < $1) AS earlier
                  FROM orders o WHERE ${PLACED} AND o.created_at >= $1 AND o.created_at < $2 AND ${ORDER_FILTER} GROUP BY o.user_id) c`, args)
   }
 
   async stores(args) {
     return many(
-      `SELECT s.id AS shop_id, s.name, s.branch_code,
+      `WITH ${REFUND_EVENTS_CTE}
+       SELECT s.id AS shop_id, s.name, s.branch_code,
               COALESCE(o.orders, 0)::int AS orders, COALESCE(o.gross, 0)::numeric(14,2) AS gross, COALESCE(u.units, 0)::int AS units,
               COALESCE(c.n, 0)::int AS cancelled_orders, COALESCE(c.amount, 0)::numeric(14,2) AS cancelled_value,
               COALESCE(r.amount, 0)::numeric(14,2) AS refunds, COALESCE(rt.amount, 0)::numeric(14,2) AS returns,
@@ -171,16 +167,10 @@ export class BusinessAnalyticsRepository {
                              WHERE o.shop_id = s.id AND ${PLACED} AND o.created_at >= $1 AND o.created_at < $2 AND ($4::text IS NULL OR ${CH} = $4)) u ON TRUE
          LEFT JOIN LATERAL (SELECT COUNT(*) AS n, SUM(o.total_amount) AS amount FROM orders o
                               JOIN LATERAL (SELECT MAX(h.changed_at) AS at FROM order_status_history h WHERE h.order_id = o.id AND h.to_status = 'CANCELLED') cc ON TRUE
-                             WHERE o.shop_id = s.id AND o.status = 'CANCELLED' AND cc.at >= $1 AND cc.at < $2
+                             WHERE o.shop_id = s.id AND ${CANCELLED} AND cc.at >= $1 AND cc.at < $2
                                AND EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id AND h.to_status = 'CONFIRMED') AND ($4::text IS NULL OR ${CH} = $4)) c ON TRUE
-         LEFT JOIN LATERAL (SELECT SUM(x.amt) AS amount FROM (
-                              SELECT COALESCE(rq.amt, py.amt) AS amt, COALESCE(rq.at, py.at) AS at, o.shop_id, o.status, o.buyer_gstin, o.b2b_approval_status
-                                FROM orders o
-                                LEFT JOIN (SELECT order_id, SUM(refund_amount) AS amt, MAX(processed_at) AS at FROM refund_requests WHERE status='APPROVED' AND refund_amount IS NOT NULL GROUP BY order_id) rq ON rq.order_id = o.id
-                                LEFT JOIN (SELECT order_id, SUM(refund_amount) AS amt, MAX(updated_at) AS at FROM payments WHERE refund_amount > 0 GROUP BY order_id) py ON py.order_id = o.id
-                               WHERE o.shop_id = s.id AND (rq.order_id IS NOT NULL OR py.order_id IS NOT NULL)) x
-                             WHERE x.status <> 'CANCELLED' AND x.at >= $1 AND x.at < $2
-                               AND ($4::text IS NULL OR (CASE WHEN x.buyer_gstin IS NOT NULL OR x.b2b_approval_status IS NOT NULL THEN 'B2B' ELSE 'B2C' END) = $4)) r ON TRUE
+         LEFT JOIN LATERAL (SELECT SUM(ref.amt) AS amount FROM refund_events ref JOIN orders o ON o.id = ref.order_id
+                             WHERE o.shop_id = s.id AND NOT ${CANCELLED} AND ref.at >= $1 AND ref.at < $2 AND ($4::text IS NULL OR ${CH} = $4)) r ON TRUE
          LEFT JOIN LATERAL (SELECT SUM(m.quantity_delta * COALESCE(sp.sale_price, sp.price, p.price)) AS amount FROM stock_movements m
                               JOIN shop_products sp ON sp.id = m.shop_product_id JOIN products p ON p.id = m.product_id
                              WHERE m.shop_id = s.id AND m.type = 'RETURN_STOCK' AND m.created_at >= $1 AND m.created_at < $2) rt ON TRUE

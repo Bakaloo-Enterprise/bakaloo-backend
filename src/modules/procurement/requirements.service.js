@@ -97,7 +97,8 @@ export class RequirementsService {
     const rows = (await this.repo.planRows()).map((r) => ({
       productId: r.product_id, name: r.name, unit: r.unit, imageUrl: r.image_url, firstDue: r.first_due,
       appOrders: r.app_orders, confirmed: r.confirmed, storeStock: r.store_stock, centralStock: r.central_stock,
-      lastPrice: r.last_price === null ? null : Number(r.last_price), lastVendor: r.last_vendor,
+      lastPrice: r.last_price === null ? null : Number(r.last_price), lastVendor: r.last_vendor, lastVendorId: r.last_vendor_id ?? null,
+      vendors: (r.vendors ?? []).map((v) => ({ vendorId: v.vendorId, name: v.name, price: v.price === null ? null : Number(v.price), lastOn: v.on, times: v.times })),
       ...planFor({ confirmed: r.confirmed, appOrders: r.app_orders, inquiry: r.inquiry, shopLow: r.shop_low, storeStock: r.store_stock, centralStock: r.central_stock, incoming: r.incoming }),
     }))
     const order = { BUY: 0, WATCH: 1, OK: 2 }

@@ -22,14 +22,15 @@ export class SuppliersService {
   /** Everyone we owe, biggest first, with the overdue part called out. */
   async payables() {
     const today = this.today()
-    const [vendors, bills, paid, coming] = await Promise.all([this.repo.vendors({ includeInactive: true }), this.repo.bills(), this.repo.paymentTotals(), this.repo.onTheWay()])
+    const [vendors, bills, paid, coming, usual] = await Promise.all([this.repo.vendors({ includeInactive: true }), this.repo.bills(), this.repo.paymentTotals(), this.repo.onTheWay(), this.repo.vendorUsuals()])
     const paidBy = new Map(paid.map((p) => [p.vendor_id, Number(p.total)]))
     const comingBy = new Map(coming.map((c) => [c.vendor_id, c]))
+    const usualBy = new Map(usual.map((u) => [u.vendor_id, u]))
     const rows = vendors.map((v) => {
       const mine = bills.filter((b) => b.vendor_id === v.id).map((b) => ({ ...this.#bill(b), vendorId: v.id }))
       const s = settleBills(mine, paidBy.get(v.id) ?? 0, { creditDays: v.credit_days, today })
       const c = comingBy.get(v.id)
-      return { vendorId: v.id, name: v.name, phone: v.phone, paymentTerms: v.payment_terms, creditDays: v.credit_days, isActive: v.is_active, owed: s.owed, overdue: s.overdue, nextDue: s.nextDue, unpaidBills: s.bills.filter((b) => b.left > 0).length, onTheWay: c ? { count: c.n, value: money(c.value) } : null }
+      return { vendorId: v.id, name: v.name, phone: v.phone, paymentTerms: v.payment_terms, creditDays: v.credit_days, isActive: v.is_active, owed: s.owed, overdue: s.overdue, nextDue: s.nextDue, unpaidBills: s.bills.filter((b) => b.left > 0).length, onTheWay: c ? { count: c.n, value: money(c.value) } : null, usually: usualBy.get(v.id)?.products ?? [], lastBoughtOn: usualBy.get(v.id)?.last_on ?? null }
     })
     rows.sort((a, b) => b.overdue - a.overdue || b.owed - a.owed || a.name.localeCompare(b.name))
     return { totalOwed: money(rows.reduce((n, r) => n + r.owed, 0)), totalOverdue: money(rows.reduce((n, r) => n + r.overdue, 0)), vendors: rows, note: 'Owed = purchases that arrived − credit for goods sent back − payments. Goods still on the way are not owed yet.' }

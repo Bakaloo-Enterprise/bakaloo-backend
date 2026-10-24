@@ -11,16 +11,16 @@ import { stripPiiFromRows } from '../../../utils/pii-strip.js'
 
 /** The reports the HQ Reports page can run (same ids as /export). */
 export const REPORT_TYPES = Object.freeze([
-  { id: 'gmv', name: 'GMV', description: 'Gross merchandise value by day' },
-  { id: 'orders', name: 'Orders', description: 'Order counts and status breakdown' },
-  { id: 'revenue', name: 'Revenue', description: 'Gross, refunded and net revenue by day' },
-  { id: 'refunds', name: 'Refunds', description: 'Refund counts and amounts by day' },
-  { id: 'shop-performance', name: 'Shop Performance', description: 'Per-shop KPIs comparison' },
-  { id: 'top-shops', name: 'Top Shops', description: 'Best performing shops' },
-  { id: 'top-products', name: 'Top Products', description: 'Top selling products' },
+  { id: 'gmv', name: 'GMV', description: 'Value of orders that stood, by day (cancelled and unpaid orders left out), before refunds' },
+  { id: 'orders', name: 'Orders', description: 'Order counts and status breakdown by day (cancelled-then-refunded shows as cancelled)' },
+  { id: 'revenue', name: 'Revenue', description: 'Sold, given back and kept, by day. Refunds are dated the day they were paid back' },
+  { id: 'refunds', name: 'Refunds', description: 'Refund counts and amounts by the day the money went back' },
+  { id: 'shop-performance', name: 'Shop Performance', description: 'Per store: orders that stood and money kept' },
+  { id: 'top-shops', name: 'Top Shops', description: 'Stores ranked by money kept' },
+  { id: 'top-products', name: 'Top Products', description: 'Best sellers by quantity, from orders that stood' },
   { id: 'low-stock', name: 'Low Stock', description: 'Products with 10 or fewer units left' },
-  { id: 'rider-performance', name: 'Rider Performance', description: 'Delivery metrics per rider' },
-  { id: 'coupon-usage', name: 'Coupon Usage', description: 'Coupon redemption and discount given' },
+  { id: 'rider-performance', name: 'Rider Performance', description: 'Deliveries made in the period and how long they took' },
+  { id: 'coupon-usage', name: 'Coupon Usage', description: 'Coupon use and discount given, on orders that stood' },
   { id: 'payouts', name: 'Payouts', description: 'Shop payout history' },
   { id: 'customer-acquisition', name: 'Customer Acquisition', description: 'New customers in the period' },
 ])
