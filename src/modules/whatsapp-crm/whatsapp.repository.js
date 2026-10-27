@@ -352,7 +352,17 @@ export class WhatsappRepository {
     if (status) add('c.status = $#', status)
     if (assignedTo === 'unassigned') where.push('c.assigned_to IS NULL')
     else if (assignedTo) add('c.assigned_to = $#', assignedTo)
-    if (labelId) add('EXISTS (SELECT 1 FROM wa_contact_labels x WHERE x.contact_id = ct.id AND x.label_id = $#)', labelId)
+    if (labelId) {
+      // "B2B" / "B2C" labels follow the same rule as the pipeline's B2B/B2C filter (approved business account or a B2B label),
+      // since nobody attaches them by hand to every customer.
+      const { rows: lr } = await query(`SELECT lower(name) AS name FROM wa_labels WHERE id = $1`, [labelId])
+      const cls = lr[0]?.name
+      if (cls === 'b2b' || cls === 'b2c') {
+        const isB2b = `(EXISTS (SELECT 1 FROM business_accounts b WHERE b.user_id = COALESCE(ct.user_id, u.id) AND b.status = 'APPROVED' AND b.b2b_enabled)
+            OR EXISTS (SELECT 1 FROM wa_contact_labels x JOIN wa_labels xl ON xl.id = x.label_id WHERE x.contact_id = ct.id AND lower(xl.name) = 'b2b'))`
+        where.push(cls === 'b2b' ? isB2b : `NOT ${isB2b}`)
+      } else add('EXISTS (SELECT 1 FROM wa_contact_labels x WHERE x.contact_id = ct.id AND x.label_id = $#)', labelId)
+    }
     if (visibleTo) add('(c.assigned_to IS NULL OR c.assigned_to = $#)', visibleTo)
     if (search) {
       params.push(`%${search}%`)

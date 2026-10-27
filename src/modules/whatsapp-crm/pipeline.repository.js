@@ -64,16 +64,28 @@ export class PipelineRepository {
     if (visibleTo) add('(c.assigned_to IS NULL OR c.assigned_to = $#)', visibleTo)
     if (assignedTo === 'unassigned') where.push('c.assigned_to IS NULL')
     else if (assignedTo) add('c.assigned_to = $#', assignedTo)
-    if (labelId) add('EXISTS (SELECT 1 FROM wa_contact_labels x WHERE x.contact_id = ct.id AND x.label_id = $#)', labelId)
+    // The built-in "B2B" / "B2C" labels are never attached by hand to every customer, so picking one filters by the same
+    // rule as the B2B/B2C dropdown (approved business account or a B2B label) instead of by the raw label row.
+    let labelClass = null
+    if (labelId) {
+      const { rows: lr } = await query(`SELECT lower(name) AS name FROM wa_labels WHERE id = $1`, [labelId])
+      if (lr[0]?.name === 'b2b' || lr[0]?.name === 'b2c') labelClass = lr[0].name
+      else add('EXISTS (SELECT 1 FROM wa_contact_labels x WHERE x.contact_id = ct.id AND x.label_id = $#)', labelId)
+    }
     if (search) {
       params.push(`%${search}%`)
       const i = params.length
       where.push(`(ct.profile_name ILIKE $${i} OR ct.phone ILIKE $${i} OR ct.wa_id ILIKE $${i} OR u.name ILIKE $${i})`)
     }
+    const outer = []
+    if (b2b === 'B2B') outer.push('card.is_b2b')
+    else if (b2b === 'B2C') outer.push('NOT card.is_b2b')
+    if (labelClass === 'b2b') outer.push('card.is_b2b')
+    else if (labelClass === 'b2c') outer.push('NOT card.is_b2b')
     params.push(limit + 1)
     const { rows } = await query(
       `SELECT * FROM (${CARD_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}) card
-        ${b2b === 'B2B' ? 'WHERE card.is_b2b' : b2b === 'B2C' ? 'WHERE NOT card.is_b2b' : ''}
+        ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
         ORDER BY card.last_message_at DESC NULLS LAST LIMIT $${params.length}`,
       params,
     )

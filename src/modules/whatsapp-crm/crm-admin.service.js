@@ -98,7 +98,10 @@ export class CrmAdminService {
   // ─── Labels ───────────────────────────────────────────────────────
   async createLabel(input, access) {
     try {
-      return await this.admin.createLabel(input, access.userId)
+      const label = await this.admin.createLabel(input, access.userId)
+      // Other open screens (and other people) get the new label in their filters straight away.
+      this.emit('crm:conversation', { conversationIds: [], labelsChanged: true })
+      return label
     } catch (err) {
       if (err.code === '23505') throw new CrmError('A label with this name already exists', 409, 'LABEL_EXISTS')
       throw err
