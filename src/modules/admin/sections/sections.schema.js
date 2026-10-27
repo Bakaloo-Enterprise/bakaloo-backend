@@ -28,7 +28,7 @@ const merchBindingSchema = {
       items: { type: 'string', format: 'uuid' },
       default: [],
     },
-    limit: { type: 'integer', minimum: 1, maximum: 50 },
+    limit: { type: 'integer', minimum: 1, maximum: 200 },
     source: { type: 'string', enum: ['category', 'tag', 'manual'] },
     tags: {
       type: 'array',

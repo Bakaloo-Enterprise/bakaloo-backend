@@ -48,9 +48,9 @@ const HOME_CAPS = {
 
 // Section-level product count cap applied to every section type from the
 // manifest (productCarousel, categoryProductGrid, archedShowcase, etc.).
-// The dashboard ProductConfigEditor already clamps its slider to 20 (phase 5D),
-// but we enforce a server-side cap here so old/mis-configured records are safe.
-const HOME_MANIFEST_SECTION_CAP = 12
+// The dashboard product-limit slider (ProductSourceConfig, MOBILE_HOME_LIMIT_MAX) tops out at the same
+// value; keep them in lock-step. The cap only exists so mis-configured records stay safe.
+const HOME_MANIFEST_SECTION_CAP = 200
 
 export class PublicThemeController {
   constructor() {
