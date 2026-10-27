@@ -2,6 +2,9 @@ import { CrmError } from './errors.js'
 import { canAccessConversation } from './access.js'
 import { decideAutoMove, scoreCard, targetAutoStage } from './pipeline.js'
 
+/** Safety ceiling for one board load. Normal use shows every customer; the UI draws each column in batches. */
+const PIPELINE_BOARD_LIMIT = 10000
+
 const PRIORITY_ORDER = { HIGH: 0, MEDIUM: 1, NORMAL: 2 }
 
 export class PipelineService {
@@ -85,7 +88,7 @@ export class PipelineService {
    */
   async board(filters, canSeeAll, userId) {
     const stages = await this.repo.listStages()
-    const limit = 500
+    const limit = PIPELINE_BOARD_LIMIT
     const rows = await this.repo.board({ ...filters, visibleTo: canSeeAll ? undefined : userId, limit })
     const truncated = rows.length > limit
     const now = this.now()
