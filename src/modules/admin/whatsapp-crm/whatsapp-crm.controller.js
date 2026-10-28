@@ -1,3 +1,4 @@
+import { demoWhatsappSettingsView } from '../../demo/demo-viewer.js'
 import { success, error } from '../../../utils/apiResponse.js'
 import { logger } from '../../../config/logger.js'
 import { CrmError } from '../../whatsapp-crm/errors.js'
@@ -62,6 +63,8 @@ export class AdminWhatsappCrmController {
 
   // ─── WhatsApp connection settings (Settings page) ───
   async settingsView(request, reply) {
+    // Demo viewer accounts get clearly fake sample values — the real IDs, tokens and secrets never leave the server.
+    if (request.auth?.demoViewer) return success(demoWhatsappSettingsView(), 'WhatsApp settings fetched')
     const { settings } = getWhatsappServices()
     try {
       const proto = request.headers['x-forwarded-proto'] ?? request.protocol

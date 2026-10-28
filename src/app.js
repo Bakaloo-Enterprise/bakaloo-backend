@@ -1,4 +1,4 @@
-import { installDemoViewerMasking } from './modules/demo/demo-viewer.js'
+import { installDemoViewerMasking, installDemoReadOnlyGate } from './modules/demo/demo-viewer.js'
 import { installFeatureGate } from './modules/features/feature-access.js'
 import Fastify from 'fastify'
 import { env } from './config/env.js'
@@ -118,6 +118,8 @@ export const buildApp = async () => {
   // Features still in development (WhatsApp CRM, team chat, procurement, catalog bulk, POS, business analytics) are
   // usable only by Developer Super Admins until a developer releases them. One global gate, installed before the
   // module routes so it covers their prefixes without editing those modules.
+  // Demo viewer accounts are view-only: refuse every write before any route (or the feature gate) runs.
+  installDemoReadOnlyGate(app)
   installFeatureGate(app)
   // Demo viewer accounts (migration 171): customer numbers outside the demo customers leave the API blurred.
   installDemoViewerMasking(app)

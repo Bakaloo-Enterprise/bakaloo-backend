@@ -95,6 +95,55 @@ describe.skipIf(!enabled)('Demo viewer account', () => {
     for (const c of foreign) expect(c.phone).toContain('•')
   })
 
+  it('the demo viewer can look but not change or send anything; everyone else can still write', async () => {
+    const any = (await query(`SELECT id FROM users WHERE role = 'CUSTOMER' LIMIT 1`)).rows[0].id
+    const send = (method, url, token, payload = {}) => app.inject({ method, url, payload, headers: { authorization: `Bearer ${token}` } })
+    const attempts = [
+      ['PUT', `/api/v1/admin/customers/${any}/block`],
+      ['POST', `/api/v1/admin/customers/${any}/credit-wallet`],
+      ['POST', `/api/v1/admin/customers/${any}/debit-wallet`],
+      ['POST', `/api/v1/admin/customers/${any}/notify`],
+      ['POST', '/api/v1/admin/notifications/send-bulk'],
+      ['POST', '/api/v1/admin/crm/conversations/00000000-0000-0000-0000-000000000000/messages'],
+      ['DELETE', '/api/v1/admin/products/00000000-0000-0000-0000-000000000000'],
+      ['PUT', '/api/v1/admin/themes/00000000-0000-0000-0000-000000000000'],
+      ['POST', '/api/v1/admin/orders/00000000-0000-0000-0000-000000000000/refund'],
+      ['POST', '/api/v1/wallet/admin/00000000-0000-0000-0000-000000000000/credit'],
+    ]
+    for (const [m, u] of attempts) {
+      const demo = await send(m, u, tok.demo)
+      expect(demo.statusCode, `${m} ${u}`).toBe(403)
+      expect(demo.json().code, `${m} ${u}`).toBe('DEMO_READ_ONLY')
+      expect(demo.json().message).toContain('Submit is not eligible')
+      // the same call from a normal admin is never stopped by the demo gate (it may fail validation / not-found for its own reasons)
+      const admin = await send(m, u, tok.admin)
+      expect(admin.json()?.code, `admin ${m} ${u}`).not.toBe('DEMO_READ_ONLY')
+    }
+    // signing in is still possible for the demo account
+    const login = await app.inject({ method: 'POST', url: '/api/v1/admin/auth/login', payload: { email: 'nobody@t.local', password: 'x' } })
+    expect(login.json()?.code).not.toBe('DEMO_READ_ONLY')
+  })
+
+  it('WhatsApp settings: the demo viewer gets fake sample values, never the real connection', async () => {
+    const real = await get(tok.admin, '/api/v1/admin/crm/settings')
+    const demo = await get(tok.demo, '/api/v1/admin/crm/settings')
+    expect(demo.status).toBe(200)
+    expect(demo.body.data.canManage).toBe(true) // form is shown with sample values; saving is refused below
+    const f = demo.body.data.fields
+    expect(f.phoneNumberId.value).toMatch(/^DEMO-/)
+    expect(f.accessToken.masked).toMatch(/^DEMO/)
+    expect(f.verifyToken.value).toBe('demo-verify-token-not-real')
+    // nothing from the real configuration appears anywhere in the demo response
+    const text = JSON.stringify(demo.body)
+    const realF = real.body.data?.fields || {}
+    for (const v of [realF.phoneNumberId?.value, realF.wabaId?.value, realF.appId?.value, realF.verifyToken?.value, realF.accessToken?.masked]) {
+      if (v && String(v).length > 5) expect(text).not.toContain(String(v))
+    }
+    expect(JSON.stringify(demo.body.data.webhook.callbackUrl)).toContain('demo.example.com')
+    const save = await app.inject({ method: 'PUT', url: '/api/v1/admin/crm/settings', payload: { phoneNumberId: '1' }, headers: { authorization: `Bearer ${tok.demo}` } })
+    expect(save.json().code).toBe('DEMO_READ_ONLY')
+  })
+
   it('a demo viewer request leaves no scope behind for the next request', async () => {
     await get(tok.demo, '/api/v1/admin/orders?limit=5')
     const total = Number((await query(`SELECT count(*) FROM orders WHERE b2b_approval_status IS NULL`)).rows[0].count)
