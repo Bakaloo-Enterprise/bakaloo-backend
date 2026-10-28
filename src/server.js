@@ -1,6 +1,6 @@
 import { buildApp } from './app.js'
 import { env } from './config/env.js'
-import { testConnection, closePool } from './config/database.js'
+import { testConnection, closePool, query } from './config/database.js'
 import { closeRedis } from './config/redis.js'
 import { logger } from './config/logger.js'
 import { runPermissionAudit } from './utils/permission-audit.js'
@@ -28,6 +28,13 @@ const start = async () => {
   try {
     // Test database connection before starting
     await testConnection()
+
+    // Demo-viewer views (migration 171) copy table columns; refresh them so a later migration never leaves one stale.
+    try {
+      await query('SELECT demo_scope_rebuild()')
+    } catch (err) {
+      logger.warn({ err: err.message }, 'demo_scope_rebuild skipped (migration 171 not applied yet?)')
+    }
 
     // Build Fastify app
     const app = await buildApp()

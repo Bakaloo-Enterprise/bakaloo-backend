@@ -61,7 +61,7 @@ export async function isDeveloper(userId) {
 /** Can this user use the feature right now? */
 export async function canUseFeature(userId, key) {
   const { rows } = await query(
-    `SELECT u.is_developer, f.released,
+    `SELECT u.is_developer, u.is_demo_viewer, f.released,
             EXISTS (SELECT 1 FROM feature_grants g WHERE g.feature_key = f.key AND g.user_id = u.id) AS granted
        FROM users u, feature_flags f
       WHERE u.id = $1 AND u.is_active = true AND f.key = $2`,
@@ -69,22 +69,24 @@ export async function canUseFeature(userId, key) {
   )
   const row = rows[0]
   if (!row) return false // unknown user or unknown feature → closed
-  return row.is_developer === true || row.released === true || row.granted === true
+  return row.is_developer === true || row.is_demo_viewer === true || row.released === true || row.granted === true
 }
 
 /** Everything the dashboard needs to draw locks: one entry per feature + whether the caller is a developer. */
 export async function loadFeatureAccess(userId) {
   const [{ rows: flags }, { rows: me }, { rows: grants }] = await Promise.all([
     query(`SELECT key, label, description, released FROM feature_flags ORDER BY label`),
-    query(`SELECT is_developer FROM users WHERE id = $1 AND is_active = true`, [userId]),
+    query(`SELECT is_developer, is_demo_viewer FROM users WHERE id = $1 AND is_active = true`, [userId]),
     query(`SELECT feature_key FROM feature_grants WHERE user_id = $1`, [userId]),
   ])
   const dev = me[0]?.is_developer === true
+  const demo = me[0]?.is_demo_viewer === true
   const granted = new Set(grants.map((g) => g.feature_key))
   return {
     isDeveloper: dev,
+    isDemoViewer: demo,
     features: Object.fromEntries(
-      flags.map((f) => [f.key, { label: f.label, released: f.released, canAccess: dev || f.released || granted.has(f.key) }]),
+      flags.map((f) => [f.key, { label: f.label, released: f.released, canAccess: dev || demo || f.released || granted.has(f.key) }]),
     ),
   }
 }

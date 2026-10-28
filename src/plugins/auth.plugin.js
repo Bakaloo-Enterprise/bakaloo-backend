@@ -5,11 +5,19 @@ import { env } from '../config/env.js'
 import { query } from '../config/database.js'
 import { ERROR_CODES } from '../constants/errors.js'
 import { logger } from '../config/logger.js'
+import { requestContext } from './requestContext.plugin.js'
 
 /**
  * Auth plugin — registers JWT + Cookie support
  * Decorates fastify with `authenticate` and `authorize` preHandlers
  */
+function shouldScopeDemoRequest(request) {
+  const method = request.method
+  if (method !== 'GET' && method !== 'HEAD') return false
+  const path = String(request.raw.url || '').split('?')[0]
+  return !path.startsWith('/api/v1/admin/auth/') && !path.startsWith('/api/v1/auth/')
+}
+
 async function authPlugin(fastify) {
   // Cookie support (for httpOnly refresh token cookie)
   await fastify.register(cookie, {
@@ -78,7 +86,7 @@ async function authPlugin(fastify) {
     // Single PK lookup fetches both existing gates plus live B2B status in
     // one round-trip.
     const { rows } = await query(
-      `SELECT u.is_blocked, u.session_version, ba.status AS b2b_status, ba.b2b_enabled
+      `SELECT u.is_blocked, u.session_version, u.is_demo_viewer, ba.status AS b2b_status, ba.b2b_enabled
          FROM users u
          LEFT JOIN business_accounts ba ON ba.user_id = u.id
         WHERE u.id = $1 LIMIT 1`,
@@ -141,8 +149,17 @@ async function authPlugin(fastify) {
     // request.auth.b2b is null when the account has never applied for a
     // business account at all — resolveEffectivePriceMode/resolveEffectiveAudience
     // treat that the same as PENDING/REJECTED (never grants B2B pricing/theme).
+    // Demo viewer (migration 171): reads run against the demo_scope views and responses get customer numbers masked
+    // (see demo-viewer.js). Writes and the sign-in / sign-out calls run normally.
+    const demoViewer = rows[0]?.is_demo_viewer === true
+    if (demoViewer && shouldScopeDemoRequest(request)) {
+      const store = requestContext.getStore()
+      if (store) store.demoScope = true
+    }
+
     request.auth = {
       ...(request.auth || {}),
+      demoViewer,
       b2b: rows[0]?.b2b_status
         ? { status: rows[0].b2b_status, enabled: !!rows[0].b2b_enabled }
         : null,

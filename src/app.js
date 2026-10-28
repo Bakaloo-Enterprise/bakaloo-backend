@@ -1,3 +1,4 @@
+import { installDemoViewerMasking } from './modules/demo/demo-viewer.js'
 import { installFeatureGate } from './modules/features/feature-access.js'
 import Fastify from 'fastify'
 import { env } from './config/env.js'
@@ -118,6 +119,8 @@ export const buildApp = async () => {
   // usable only by Developer Super Admins until a developer releases them. One global gate, installed before the
   // module routes so it covers their prefixes without editing those modules.
   installFeatureGate(app)
+  // Demo viewer accounts (migration 171): customer numbers outside the demo customers leave the API blurred.
+  installDemoViewerMasking(app)
 
   // ─── MODULE ROUTES ─────────────────────────────────────
 
