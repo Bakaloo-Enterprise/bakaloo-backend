@@ -3,6 +3,15 @@ import https from 'node:https'
 
 import { success, error } from '../../utils/apiResponse.js'
 import { env } from '../../config/env.js'
+import { getMediaBaseUrl } from '../../config/media.js'
+import { MediaUploadError } from '../../utils/media-storage.js'
+import { sweepOrphans } from '../../utils/media-sweeper.js'
+
+/** Hostile or invalid uploads get their own clear message; everything else stays a generic upload failure. */
+function uploadFailure(reply, err, fallback) {
+  if (err instanceof MediaUploadError) return reply.code(err.statusCode).send(error(err.message, err.code))
+  return reply.code(400).send(error(fallback, 'UPLOAD_FAILED'))
+}
 
 /**
  * Uploads controller
@@ -28,11 +37,11 @@ export class UploadsController {
     }
 
     try {
-      const result = await this.service.uploadImage(file.file)
+      const result = await this.service.uploadImage(file.file, { kind: request.query?.kind, uploadedBy: request.user?.id })
       return reply.code(200).send(success(result, 'Image uploaded'))
     } catch (err) {
       request.log.error({ err }, 'Image upload failed in controller')
-      return reply.code(400).send(error('Failed to upload image. Check cloud provider credentials.', 'UPLOAD_FAILED'))
+      return uploadFailure(reply, err, 'Failed to upload image. Check cloud provider credentials.')
     }
   }
 
@@ -56,11 +65,11 @@ export class UploadsController {
     }
 
     try {
-      const results = await this.service.uploadMultipleImages(files)
+      const results = await this.service.uploadMultipleImages(files, { kind: request.query?.kind, uploadedBy: request.user?.id })
       return reply.code(200).send(success(results, `${results.length} image(s) uploaded`))
     } catch (err) {
       request.log.error({ err }, 'Multiple image upload failed in controller')
-      return reply.code(400).send(error('Failed to upload images. Check cloud provider credentials.', 'UPLOAD_FAILED'))
+      return uploadFailure(reply, err, 'Failed to upload images. Check cloud provider credentials.')
     }
   }
 
@@ -69,9 +78,20 @@ export class UploadsController {
     if (!data) {
       return reply.code(400).send(error('No file provided'))
     }
-    const buffer = await data.toBuffer()
-    const result = await this.service.uploadFile(buffer, data.filename)
-    return reply.code(200).send(success(result, 'File uploaded'))
+    try {
+      const buffer = await data.toBuffer()
+      const result = await this.service.uploadFile(buffer, data.filename, undefined, { uploadedBy: request.user?.id })
+      return reply.code(200).send(success(result, 'File uploaded'))
+    } catch (err) {
+      request.log.error({ err }, 'File upload failed in controller')
+      return uploadFailure(reply, err, 'Failed to upload file.')
+    }
+  }
+
+  /** POST /cleanup — find unused images and move them to trash [ADMIN]. ?dryRun=true only reports. */
+  async cleanup(request, reply) {
+    const result = await sweepOrphans({ dryRun: `${request.query?.dryRun}` === 'true' })
+    return reply.code(200).send(success({ ...result, orphans: result.orphans.slice(0, 200) }, 'Cleanup finished'))
   }
 
   /**
@@ -89,8 +109,10 @@ export class UploadsController {
     // Security: only proxy from Cloudinary
     try {
       const parsed = new URL(url)
-      if (!parsed.hostname.endsWith('cloudinary.com')) {
-        return reply.code(403).send(error('Only Cloudinary URLs are allowed', 'FORBIDDEN_DOMAIN'))
+      const base = getMediaBaseUrl()
+      const isOwn = Boolean(base && URL.canParse(base) && new URL(base).origin === parsed.origin)
+      if (!parsed.hostname.endsWith('cloudinary.com') && !isOwn) {
+        return reply.code(403).send(error('Only Cloudinary or our own media URLs are allowed', 'FORBIDDEN_DOMAIN'))
       }
     } catch {
       return reply.code(400).send(error('Invalid URL', 'INVALID_URL'))

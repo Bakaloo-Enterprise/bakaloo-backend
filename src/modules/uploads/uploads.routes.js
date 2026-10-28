@@ -13,7 +13,7 @@ export default async function uploadsRoutes(fastify) {
   fastify.post('/image', {
     schema: {
       tags: ['Uploads'],
-      summary: 'Upload single image to Cloudinary',
+      summary: 'Upload single image (query: kind=products|banners|themes|whatsapp|...)',
       security: [{ bearerAuth: [] }],
       consumes: ['multipart/form-data'],
     },
@@ -24,7 +24,7 @@ export default async function uploadsRoutes(fastify) {
   fastify.post('/images', {
     schema: {
       tags: ['Uploads'],
-      summary: 'Upload multiple images [ADMIN]',
+      summary: 'Upload multiple images [ADMIN] (query: kind)',
       security: [{ bearerAuth: [] }],
       consumes: ['multipart/form-data'],
     },
@@ -35,7 +35,7 @@ export default async function uploadsRoutes(fastify) {
   fastify.post('/file', {
     schema: {
       tags: ['Uploads'],
-      summary: 'Upload file to Cloudinary (Lottie, etc.) [ADMIN]',
+      summary: 'Upload a Lottie file [ADMIN]',
       security: [{ bearerAuth: [] }],
       consumes: ['multipart/form-data'],
     },
@@ -46,7 +46,7 @@ export default async function uploadsRoutes(fastify) {
   fastify.get('/proxy', {
     schema: {
       tags: ['Uploads'],
-      summary: 'Proxy a Cloudinary file download',
+      summary: 'Proxy a media file download',
       querystring: {
         type: 'object',
         required: ['url'],
@@ -62,7 +62,7 @@ export default async function uploadsRoutes(fastify) {
   fastify.delete('/image', {
     schema: {
       tags: ['Uploads'],
-      summary: 'Delete image from Cloudinary [ADMIN]',
+      summary: 'Delete an image (released, then trashed once unused) [ADMIN]',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
@@ -74,4 +74,15 @@ export default async function uploadsRoutes(fastify) {
     },
     preHandler: [fastify.authenticate, fastify.authorize(['ADMIN'])],
   }, controller.deleteImage.bind(controller))
+
+  // POST /cleanup — trash images nothing uses any more [ADMIN]
+  fastify.post('/cleanup', {
+    schema: {
+      tags: ['Uploads'],
+      summary: 'Find unused images and move them to the 30-day trash [ADMIN]; ?dryRun=true only reports',
+      security: [{ bearerAuth: [] }],
+      querystring: { type: 'object', properties: { dryRun: { type: 'string' } } },
+    },
+    preHandler: [fastify.authenticate, fastify.authorize(['ADMIN'])],
+  }, controller.cleanup.bind(controller))
 }

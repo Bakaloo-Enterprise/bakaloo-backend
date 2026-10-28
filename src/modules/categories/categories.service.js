@@ -2,7 +2,7 @@ import { cacheGet, cacheSet, cacheDeletePattern } from '../../utils/cache.js'
 import { simpleSlug } from '../../utils/slugify.js'
 import { getOffsetLimit, buildPagination } from '../../utils/paginate.js'
 import { logger } from '../../config/logger.js'
-import { normalizeCloudinaryDeliveryUrl } from '../../config/cloudinary.js'
+import { normalizeMediaDeliveryUrl } from '../../config/media.js'
 import { AllocationService } from '../allocation/allocation.service.js'
 import { AllocationRepository } from '../allocation/allocation.repository.js'
 
@@ -380,14 +380,14 @@ export class CategoriesService {
 
     return {
       ...category,
-      image_url: normalizeCloudinaryDeliveryUrl(category.image_url, 'default'),
+      image_url: normalizeMediaDeliveryUrl(category.image_url, 'w320'),
     }
   }
 
   _normalizeProducts(products = []) {
     return products.map((product) => ({
       ...product,
-      thumbnail_url: normalizeCloudinaryDeliveryUrl(product.thumbnail_url, 'default'),
+      thumbnail_url: normalizeMediaDeliveryUrl(product.thumbnail_url, 'w640'),
     }))
   }
 }

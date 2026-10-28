@@ -144,6 +144,24 @@ describe.skipIf(!enabled)('Demo viewer account', () => {
     expect(save.json().code).toBe('DEMO_READ_ONLY')
   })
 
+  it('every WhatsApp settings button is refused for the demo viewer and the saved connection is left untouched', async () => {
+    const before = JSON.stringify((await query(`SELECT * FROM wa_settings`)).rows)
+    const press = (method, url, payload = {}) => app.inject({ method, url, payload, headers: { authorization: `Bearer ${tok.demo}` } })
+    const buttons = [
+      ['DELETE', '/api/v1/admin/crm/settings/credentials'], // "Remove saved details" -> "Yes, remove"
+      ['PUT', '/api/v1/admin/crm/settings'],                // "Save only" / "Save & test connection" / "Generate a secure token"
+      ['POST', '/api/v1/admin/crm/settings/test'],          // "Test connection" / "Send test message"
+      ['POST', '/api/v1/admin/crm/settings/enable'],        // "Switch WhatsApp off"
+      ['POST', '/api/v1/admin/crm/settings/connect-replies'],
+    ]
+    for (const [m, u] of buttons) {
+      const r = await press(m, u, m === 'POST' && u.endsWith('enable') ? { enabled: false } : m === 'PUT' ? { phoneNumberId: 'X' } : {})
+      expect(r.statusCode, `${m} ${u}`).toBe(403)
+      expect(r.json().code, `${m} ${u}`).toBe('DEMO_READ_ONLY')
+    }
+    expect(JSON.stringify((await query(`SELECT * FROM wa_settings`)).rows)).toBe(before)
+  })
+
   it('a demo viewer request leaves no scope behind for the next request', async () => {
     await get(tok.demo, '/api/v1/admin/orders?limit=5')
     const total = Number((await query(`SELECT count(*) FROM orders WHERE b2b_approval_status IS NULL`)).rows[0].count)

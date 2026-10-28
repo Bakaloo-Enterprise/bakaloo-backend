@@ -1,7 +1,7 @@
 import { getClient } from '../../config/database.js'
 import { logger } from '../../config/logger.js'
 import { emit as emitAudit } from '../../utils/audit-log.js'
-import { buildCloudinaryUrl } from '../../config/cloudinary.js'
+import { buildMediaUrl } from '../../config/media.js'
 import { SpinWheelRepository } from './spin-wheel.repository.js'
 import { CouponsRepository } from '../coupons/coupons.repository.js'
 import { WalletService } from '../wallet/wallet.service.js'
@@ -103,7 +103,7 @@ export class SpinWheelService {
   async getAppearanceForCustomer() {
     const settings = await this.repo.getSettings()
     const backgroundImageUrl = settings?.backgroundImagePublicId
-      ? buildCloudinaryUrl(settings.backgroundImagePublicId, 'capped1080')
+      ? buildMediaUrl(settings.backgroundImagePublicId, 'capped1080')
       : (settings?.backgroundImageUrl || null)
     return {
       backgroundImageUrl,

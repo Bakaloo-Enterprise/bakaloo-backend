@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises'
 import { testConnection, closePool } from './config/database.js'
 import { redis, closeRedis } from './config/redis.js'
+import { env } from './config/env.js'
 import { logger } from './config/logger.js'
+import { sweepOrphans } from './utils/media-sweeper.js'
 import { startWorkerRuntime, closeWorkerRuntime } from './runtime/workers.js'
 
 const WORKER_HEARTBEAT_FILE =
@@ -27,6 +29,20 @@ const start = async () => {
     }, WORKER_HEARTBEAT_INTERVAL_MS)
     heartbeatInterval.unref()
 
+    // Self-hosted media: trash images nothing uses any more (replaced/removed/abandoned), purge old trash.
+    // One worker instance only, so no two sweeps race.
+    let mediaSweepTimer = null
+    if (env.MEDIA_PROVIDER === 'self') {
+      mediaSweepTimer = setInterval(async () => {
+        try {
+          await sweepOrphans()
+        } catch (err) {
+          logger.warn({ err: err.message }, 'Media sweep failed')
+        }
+      }, 10 * 60_000)
+      mediaSweepTimer.unref()
+    }
+
     logger.info('Worker runtime is healthy')
 
     if (process.send) {
@@ -36,6 +52,7 @@ const start = async () => {
     const shutdown = async (signal) => {
       logger.info({ signal }, 'Worker shutdown signal received')
       clearInterval(heartbeatInterval)
+      if (mediaSweepTimer) clearInterval(mediaSweepTimer)
 
       await closeWorkerRuntime()
       await closePool()

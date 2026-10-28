@@ -1,7 +1,8 @@
 import { logger } from '../../config/logger.js'
 import { env } from '../../config/env.js'
-import { buildCloudinaryUrl, normalizeCloudinaryDeliveryUrl } from '../../config/cloudinary.js'
+import { buildMediaUrl, isSelfProvider, normalizeMediaDeliveryUrl } from '../../config/media.js'
 import { uploadImageWithCloudinaryFallback } from '../../utils/cloudinary-upload.js'
+import { replaceMedia, saveImage } from '../../utils/media-storage.js'
 
 /**
  * Users service — business logic for user management
@@ -53,6 +54,7 @@ export class UsersService {
    * Upload avatar to Cloudinary and update user
    */
   async uploadAvatar(userId, fileStream) {
+    if (isSelfProvider()) return this._uploadAvatarSelf(userId, fileStream)
     try {
       const result = await uploadImageWithCloudinaryFallback(fileStream, {
         folder: `${env.CLOUDINARY_FOLDER}/avatars`,
@@ -64,7 +66,7 @@ export class UsersService {
         ],
       })
 
-      const avatarUrl = buildCloudinaryUrl(
+      const avatarUrl = buildMediaUrl(
         {
           publicId: result.public_id,
           version: result.version,
@@ -81,6 +83,19 @@ export class UsersService {
   }
 
   /**
+   * Self-hosted avatar. Every upload gets a fresh id (so phones and CDNs never show a stale picture), and the
+   * previous avatar is released for cleanup.
+   */
+  async _uploadAvatarSelf(userId, fileStream) {
+    const previous = (await this.repo.findById(userId))?.avatar_url
+    const saved = await saveImage(fileStream, { kind: 'avatars', uploadedBy: userId })
+    const avatarUrl = buildMediaUrl(saved.publicId, 'avatar')
+    const user = await this.repo.updateAvatar(userId, avatarUrl)
+    await replaceMedia(previous, avatarUrl).catch((err) => logger.warn({ err }, 'Could not release the old avatar'))
+    return { success: true, avatar_url: this._normalizeUserMedia(user).avatar_url }
+  }
+
+  /**
    * Get user stats
    */
   async getStats(userId) {
@@ -92,7 +107,7 @@ export class UsersService {
 
     return {
       ...user,
-      avatar_url: normalizeCloudinaryDeliveryUrl(user.avatar_url, 'default'),
+      avatar_url: normalizeMediaDeliveryUrl(user.avatar_url, isSelfProvider() ? 'avatar' : 'default'),
     }
   }
 }

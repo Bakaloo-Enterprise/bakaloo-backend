@@ -1,6 +1,7 @@
 import { MetaApiError } from './meta-client.js'
 import { buildSendComponents, canSend, renderPreview } from './template.js'
 import { headerPicture, resolveHeaderImage } from './header-image.js'
+import { whatsappSendableUrl } from './own-media.js'
 import { classifySendError, consentDecision, resolveTemplateValues } from './campaign.js'
 
 /**
@@ -63,6 +64,7 @@ export class AutomatedSender {
       if (!mediaUrl && !template.default_header_url && String(template.header_format ?? '') === 'IMAGE') return { outcome: 'SKIPPED', reason: 'NO_IMAGE', text: 'No picture was available for this message, so it was not sent.' }
     }
     if (!mediaUrl) mediaUrl = template.default_header_url ?? null // the template's saved picture
+    mediaUrl = await whatsappSendableUrl(mediaUrl) // our own WebP images go out as a JPEG copy
     const built = buildSendComponents(template, values, { headerMediaUrl: mediaUrl })
     if (built.error) return { outcome: 'FAILED', reason: 'INVALID_TEMPLATE_VALUES', text: built.error }
     if (built.missing.length) return { outcome: 'SKIPPED', reason: 'MISSING_VALUES', text: `Could not fill: ${built.missing.join(', ')}` }

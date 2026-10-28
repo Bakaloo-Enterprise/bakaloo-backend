@@ -1,4 +1,6 @@
+import { isOwnMediaUrl } from '../../config/media.js'
 import { CrmError } from './errors.js'
+import { whatsappSendableUrl } from './own-media.js'
 import { MetaApiError } from './meta-client.js'
 import { componentsToInput, interpretTemplateWebhook, normalizeLanguage, summarizeComponents, validateTemplateInput } from './template.js'
 
@@ -224,7 +226,9 @@ export class TemplateService {
     } catch {
       throw new CrmError('That link is not valid', 400, 'INVALID_HEADER')
     }
-    if (host.protocol !== 'https:' || host.hostname !== 'res.cloudinary.com') throw new CrmError('Upload the file with the upload button first', 400, 'INVALID_HEADER')
+    const ownMedia = isOwnMediaUrl(url)
+    if (host.protocol !== 'https:' || (host.hostname !== 'res.cloudinary.com' && !ownMedia)) throw new CrmError('Upload the file with the upload button first', 400, 'INVALID_HEADER')
+    if (ownMedia && kind === 'IMAGE') url = await whatsappSendableUrl(url) // WebP -> JPEG copy, which is what Meta accepts
     let res
     try {
       res = await fetch(url, { signal: AbortSignal.timeout(20000) })

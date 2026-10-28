@@ -11,7 +11,7 @@ import { generateInvoicePDF } from '../../utils/invoiceGenerator.js'
 import { generateGstInvoicePDF } from '../../utils/gstInvoiceGenerator.js'
 import { getActivePickupToken } from '../../utils/pickupTokens.js'
 import { buildOrderBill } from '../../utils/orderBill.js'
-import { normalizeCloudinaryDeliveryUrl } from '../../config/cloudinary.js'
+import { normalizeMediaDeliveryUrl } from '../../config/media.js'
 import { NotificationsRepository } from '../notifications/notifications.repository.js'
 import { NotificationsService } from '../notifications/notifications.service.js'
 import { buildCustomerOrderEventNotification } from '../notifications/customer-order-event.helper.js'
@@ -1877,7 +1877,7 @@ export class OrdersService {
           return {
             ...item,
             thumbnailUrl: raw
-              ? normalizeCloudinaryDeliveryUrl(raw, 'thumb')
+              ? normalizeMediaDeliveryUrl(raw, 'thumb')
               : null,
           }
         }),

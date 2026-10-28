@@ -99,6 +99,20 @@ const envSchema = z.object({
   CLOUDINARY_UPLOAD_PRESET: z.string().optional(),
   CLOUDINARY_FOLDER: z.string().default('grocery-app'),
 
+  // Self-hosted media (replaces Cloudinary). MEDIA_PROVIDER stays 'cloudinary' until the files are on the media
+  // server and the database links are rewritten; flipping it back is the instant rollback.
+  MEDIA_PROVIDER: z.enum(['cloudinary', 'self']).default('cloudinary'),
+  MEDIA_STORAGE_DIR: z.string().default('./storage/media'),
+  MEDIA_PUBLIC_BASE_URL: z.string().default(''),
+  MEDIA_FOLDER: z.string().optional(),
+  MEDIA_MAX_INPUT_PIXELS: z.coerce.number().default(40_000_000),
+  MEDIA_MAX_DIMENSION: z.coerce.number().default(2560),
+  MEDIA_MAX_CONCURRENT_PROCESSING: z.coerce.number().default(3),
+  MEDIA_MIN_FREE_BYTES: z.coerce.number().default(1_073_741_824),
+  MEDIA_TRASH_DAYS: z.coerce.number().default(30),
+  MEDIA_ORPHAN_GRACE_HOURS: z.coerce.number().default(24),
+  MEDIA_RELEASE_GRACE_MINUTES: z.coerce.number().default(60),
+
   // Rate Limiting
   RATE_LIMIT_ENABLED: booleanFromEnv.default(true),
   RATE_LIMIT_MAX: z.coerce.number().default(100),

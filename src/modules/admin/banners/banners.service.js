@@ -1,6 +1,6 @@
 import { AdminBannersRepository } from './banners.repository.js'
 import { logAdminActivity } from '../../../utils/activityLogger.js'
-import { normalizeCloudinaryDeliveryUrl } from '../../../config/cloudinary.js'
+import { normalizeMediaDeliveryUrl } from '../../../config/media.js'
 import { getStoreStatusService } from '../../store-status/store-status.routes.js'
 import { cacheGet, cacheSet, cacheDeletePattern } from '../../../utils/cache.js'
 
@@ -134,7 +134,7 @@ export class AdminBannersService {
 
     return {
       ...banner,
-      image_url: normalizeCloudinaryDeliveryUrl(banner.image_url, 'default'),
+      image_url: normalizeMediaDeliveryUrl(banner.image_url, 'w1280'),
     }
   }
 }

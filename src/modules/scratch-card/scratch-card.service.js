@@ -1,7 +1,7 @@
 import { getClient } from '../../config/database.js'
 import { logger } from '../../config/logger.js'
 import { emit as emitAudit } from '../../utils/audit-log.js'
-import { buildCloudinaryUrl } from '../../config/cloudinary.js'
+import { buildMediaUrl } from '../../config/media.js'
 import { ScratchCardRepository } from './scratch-card.repository.js'
 import { CouponsRepository } from '../coupons/coupons.repository.js'
 import { WalletService } from '../wallet/wallet.service.js'
@@ -65,7 +65,7 @@ export class ScratchCardService {
   async getAppearanceForCustomer() {
     const settings = await this.repo.getSettings()
     const coverImageUrl = settings?.coverImagePublicId
-      ? buildCloudinaryUrl(settings.coverImagePublicId, 'capped1080')
+      ? buildMediaUrl(settings.coverImagePublicId, 'capped1080')
       : (settings?.coverImageUrl || null)
     return { coverImageUrl }
   }

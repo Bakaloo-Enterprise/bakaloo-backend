@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { cacheGet, cacheSet, cacheDeletePattern } from '../../utils/cache.js'
 import { generateSlug } from '../../utils/slugify.js'
 import { logger } from '../../config/logger.js'
-import { normalizeCloudinaryDeliveryUrl } from '../../config/cloudinary.js'
+import { normalizeMediaDeliveryUrl } from '../../config/media.js'
 import { AllocationService } from '../allocation/allocation.service.js'
 import { AllocationRepository } from '../allocation/allocation.repository.js'
 import { logAdminActivity } from '../../utils/activityLogger.js'
@@ -733,9 +733,9 @@ export class ProductsService {
 
     return {
       ...product,
-      thumbnail_url: normalizeCloudinaryDeliveryUrl(product.thumbnail_url, 'default'),
+      thumbnail_url: normalizeMediaDeliveryUrl(product.thumbnail_url, 'w640'), // list/card size; Cloudinary mode ignores it
       images: Array.isArray(product.images)
-        ? product.images.map((image) => normalizeCloudinaryDeliveryUrl(image, 'default'))
+        ? product.images.map((image) => normalizeMediaDeliveryUrl(image, 'w1280')) // detail gallery
         : product.images,
     }
   }
