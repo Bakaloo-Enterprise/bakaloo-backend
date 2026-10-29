@@ -3,7 +3,7 @@ import https from 'node:https'
 
 import { success, error } from '../../utils/apiResponse.js'
 import { env } from '../../config/env.js'
-import { getMediaBaseUrl } from '../../config/media.js'
+import { isOwnMediaUrl } from '../../config/media.js'
 import { MediaUploadError } from '../../utils/media-storage.js'
 import { sweepOrphans } from '../../utils/media-sweeper.js'
 
@@ -109,9 +109,7 @@ export class UploadsController {
     // Security: only proxy from Cloudinary
     try {
       const parsed = new URL(url)
-      const base = getMediaBaseUrl()
-      const isOwn = Boolean(base && URL.canParse(base) && new URL(base).origin === parsed.origin)
-      if (!parsed.hostname.endsWith('cloudinary.com') && !isOwn) {
+      if (!parsed.hostname.endsWith('cloudinary.com') && !isOwnMediaUrl(url)) {
         return reply.code(403).send(error('Only Cloudinary or our own media URLs are allowed', 'FORBIDDEN_DOMAIN'))
       }
     } catch {

@@ -105,10 +105,16 @@ export function publicIdFromSource(source) {
   return info?.publicId ? sanitizePublicId(info.publicId) : null
 }
 
+/** True only for a URL under the media base (same origin AND path prefix, e.g. https://api.bakaloo.in/media/...). */
 export function isOwnMediaUrl(value) {
   if (typeof value !== 'string' || !URL.canParse(value)) return false
   const base = getMediaBaseUrl()
-  return Boolean(base && URL.canParse(base) && new URL(base).origin === new URL(value).origin)
+  if (!base || !URL.canParse(base)) return false
+  const b = new URL(base)
+  const u = new URL(value)
+  if (b.origin !== u.origin) return false
+  const prefix = b.pathname.replace(/\/+$/, '')
+  return prefix === '' || u.pathname === prefix || u.pathname.startsWith(`${prefix}/`)
 }
 
 export function buildMediaUrl(source, profile = 'default') {
